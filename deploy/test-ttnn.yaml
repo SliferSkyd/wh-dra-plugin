@@ -1,0 +1,70 @@
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: wh-ttnn-claim
+spec:
+  devices:
+    requests:
+    - name: t3k
+      exactly:
+        deviceClassName: t3k.wormhole.tenstorrent.com
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: wh-ttnn-test
+spec:
+  resourceClaims:
+  - name: t3k
+    resourceClaimName: wh-ttnn-claim2
+  restartPolicy: Never
+  tolerations:
+  - key: node.kubernetes.io/disk-pressure
+    operator: Exists
+    effect: NoSchedule
+  containers:
+  - name: ttnn-test
+    image: npu-metal-llk:latest
+    imagePullPolicy: Never
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      set -e
+      echo "=== DRA-injected devices ==="
+      ls -la /dev/tenstorrent/
+      echo ""
+      echo "=== DRA-injected env vars ==="
+      env | grep -E "^TT_|^WH_" | sort
+      echo ""
+      echo "=== Running ttnn hardware test ==="
+      python3 - <<'PYEOF'
+      import ttnn, torch
+
+      print("Opening Wormhole device 0 via ttnn...")
+      device = ttnn.open_device(device_id=0)
+      print(f"Device opened: {device}")
+
+      a = ttnn.from_torch(torch.tensor([1.0, 2.0, 3.0]), device=device)
+      b = ttnn.from_torch(torch.tensor([4.0, 5.0, 6.0]), device=device)
+      c = ttnn.add(a, b)
+      result = ttnn.to_torch(c)
+      print(f"ttnn.add([1,2,3], [4,5,6]) = {result.tolist()}")
+      assert result.tolist() == [5.0, 7.0, 9.0], f"unexpected result: {result.tolist()}"
+
+      ttnn.close_device(device)
+      print("Device closed.")
+      print("SUCCESS: Wormhole hardware verified via DRA-allocated pod")
+      PYEOF
+    resources:
+      claims:
+      - name: t3k
+    securityContext:
+      privileged: true
+    volumeMounts:
+    - name: hugepages-1g
+      mountPath: /dev/hugepages-1G
+  volumes:
+  - name: hugepages-1g
+    hostPath:
+      path: /dev/hugepages-1G
+      type: Directory

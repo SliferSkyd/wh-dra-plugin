@@ -18,8 +18,9 @@ spec:
       serviceAccountName: wh-dra-plugin
       containers:
       - name: wh-dra-kubelet-plugin
-        image: wh-dra-kubelet-plugin:latest
-        imagePullPolicy: Never
+        image: ubuntu:22.04
+        imagePullPolicy: IfNotPresent
+        command: ["/plugin/wh-dra-kubelet-plugin"]
         args:
         - --node-name=$(NODE_NAME)
         - --cdi-dir=/var/run/cdi
@@ -33,6 +34,8 @@ spec:
         securityContext:
           privileged: true
         volumeMounts:
+        - name: plugin-binary
+          mountPath: /plugin
         - name: plugin-dir
           mountPath: /var/lib/kubelet/plugins/wormhole.tenstorrent.com
         - name: registrar-dir
@@ -44,6 +47,10 @@ spec:
         - name: checkpoint-dir
           mountPath: /var/lib/wh-dra/checkpoint
       volumes:
+      - name: plugin-binary
+        hostPath:
+          path: /home/ubuntu/wh-dra-plugin/bin
+          type: Directory
       - name: plugin-dir
         hostPath:
           path: /var/lib/kubelet/plugins/wormhole.tenstorrent.com

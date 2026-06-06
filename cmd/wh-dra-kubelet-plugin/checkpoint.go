@@ -87,6 +87,9 @@ func loadOrNewCheckpoint(path string) (*checkpoint, error) {
 		return newCheckpoint() // stale after reboot
 	}
 
+	if cp.PreparedClaims == nil {
+		cp.PreparedClaims = make(map[string]*preparedClaim)
+	}
 	return &cp, nil
 }
 

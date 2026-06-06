@@ -153,6 +153,7 @@ func (s *DeviceState) UnprepareResourceClaims(
 			continue
 		}
 		delete(cp.PreparedClaims, string(uid))
+		results[uid] = nil // explicit nil so kubelet marks claim as fully unprepared
 		klog.Infof("unprepared claim %s", uid)
 	}
 

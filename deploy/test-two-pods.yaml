@@ -1,0 +1,89 @@
+# Two pods both requesting the sole T3K device.
+# Only one can run at a time — the second stays Pending until the first releases the claim.
+#
+# Run:
+#   kubectl apply -f deploy/test-two-pods.yaml
+#   # watch pod-a run while pod-b is Pending
+#   # after pod-a completes, release the device:
+#   kubectl delete pod wh-excl-pod-a && kubectl delete resourceclaim wh-excl-claim-a
+#   # now pod-b gets scheduled
+#   kubectl delete -f deploy/test-two-pods.yaml
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: wh-excl-claim-a
+spec:
+  devices:
+    requests:
+    - name: t3k
+      exactly:
+        deviceClassName: t3k.wormhole.tenstorrent.com
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: wh-excl-pod-a
+spec:
+  resourceClaims:
+  - name: t3k
+    resourceClaimName: wh-excl-claim-a
+  restartPolicy: Never
+  tolerations:
+  - key: node.kubernetes.io/disk-pressure
+    operator: Exists
+    effect: NoSchedule
+  containers:
+  - name: workload
+    image: ubuntu:22.04
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      echo "[pod-a] acquired T3K device — holding for 30s"
+      env | grep -E "^TT_|^WH_" | sort
+      sleep 30
+      echo "[pod-a] done, releasing device"
+    resources:
+      claims:
+      - name: t3k
+    securityContext:
+      privileged: true
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: wh-excl-claim-b
+spec:
+  devices:
+    requests:
+    - name: t3k
+      exactly:
+        deviceClassName: t3k.wormhole.tenstorrent.com
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: wh-excl-pod-b
+spec:
+  resourceClaims:
+  - name: t3k
+    resourceClaimName: wh-excl-claim-b
+  restartPolicy: Never
+  tolerations:
+  - key: node.kubernetes.io/disk-pressure
+    operator: Exists
+    effect: NoSchedule
+  containers:
+  - name: workload
+    image: ubuntu:22.04
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      echo "[pod-b] acquired T3K device"
+      env | grep -E "^TT_|^WH_" | sort
+      echo "[pod-b] done"
+    resources:
+      claims:
+      - name: t3k
+    securityContext:
+      privileged: true

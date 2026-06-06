@@ -1,7 +1,7 @@
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
 metadata:
-  name: t3k-claim
+  name: wh-demo-claim
 spec:
   devices:
     requests:
@@ -12,11 +12,11 @@ spec:
 apiVersion: v1
 kind: Pod
 metadata:
-  name: wh-dra-test
+  name: wh-demo-pod
 spec:
   resourceClaims:
   - name: t3k
-    resourceClaimName: t3k-claim
+    resourceClaimName: wh-demo-claim
   restartPolicy: Never
   containers:
   - name: test
@@ -24,11 +24,13 @@ spec:
     command: ["/bin/bash", "-c"]
     args:
     - |
-      echo "=== devices ==="
-      ls /dev/tenstorrent/
-      echo "=== env ==="
-      env | grep -E "TT_|WH_" | sort
-      echo "OK"
+      echo "=== /dev/tenstorrent/ devices ==="
+      ls -la /dev/tenstorrent/
+      echo ""
+      echo "=== injected env vars ==="
+      env | grep -E "^TT_|^WH_" | sort
+      echo ""
+      echo "=== DRA demo OK ==="
     resources:
       claims:
       - name: t3k
