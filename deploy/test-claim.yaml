@@ -1,0 +1,36 @@
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  name: t3k-claim
+spec:
+  devices:
+    requests:
+    - name: t3k
+      exactly:
+        deviceClassName: t3k.wormhole.tenstorrent.com
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: wh-dra-test
+spec:
+  resourceClaims:
+  - name: t3k
+    resourceClaimName: t3k-claim
+  restartPolicy: Never
+  containers:
+  - name: test
+    image: ubuntu:22.04
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      echo "=== devices ==="
+      ls /dev/tenstorrent/
+      echo "=== env ==="
+      env | grep -E "TT_|WH_" | sort
+      echo "OK"
+    resources:
+      claims:
+      - name: t3k
+    securityContext:
+      privileged: true
