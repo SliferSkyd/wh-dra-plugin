@@ -16,7 +16,7 @@ metadata:
 spec:
   resourceClaims:
   - name: t3k
-    resourceClaimName: wh-ttnn-claim2
+    resourceClaimName: wh-ttnn-claim
   restartPolicy: Never
   tolerations:
   - key: node.kubernetes.io/disk-pressure
@@ -58,8 +58,7 @@ spec:
     resources:
       claims:
       - name: t3k
-    securityContext:
-      privileged: true
+    securityContext: {}
     volumeMounts:
     - name: hugepages-1g
       mountPath: /dev/hugepages-1G

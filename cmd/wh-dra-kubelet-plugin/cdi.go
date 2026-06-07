@@ -33,7 +33,11 @@ type cdiEdits struct {
 }
 
 type cdiDev struct {
-	Path string `json:"path"`
+	Path        string `json:"path"`
+	Type        string `json:"type"`
+	Major       int64  `json:"major"`
+	Minor       int64  `json:"minor"`
+	Permissions string `json:"permissions"`
 }
 
 type cdiMount struct {
@@ -85,7 +89,13 @@ func (h *CDIHandler) CreateCommonSpecFile() error {
 func (h *CDIHandler) CreateClaimSpecFile(claimUID string) error {
 	var devNodes []cdiDev
 	for _, dev := range h.manager.deviceNodes {
-		devNodes = append(devNodes, cdiDev{Path: dev})
+		devNodes = append(devNodes, cdiDev{
+			Path:        dev.Path,
+			Type:        dev.Type,
+			Major:       dev.Major,
+			Minor:       dev.Minor,
+			Permissions: "rw",
+		})
 	}
 
 	spec := cdiSpec{

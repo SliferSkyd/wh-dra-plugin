@@ -2,7 +2,7 @@
 
 Kubernetes DRA (Dynamic Resource Allocation) plugin for Tenstorrent Wormhole hardware (n300, T3K).
 
-Each Wormhole node is published as a single allocatable device. When a pod claims it, the plugin injects `/dev/tenstorrent/*` device nodes and mesh environment variables into the container via CDI.
+Each Wormhole node is published as a single allocatable device. When a pod claims it, the plugin injects `/dev/tenstorrent/*` device nodes and mesh environment variables into the container via CDI — no `privileged: true` required in workload pods.
 
 ## Hardware topology
 
@@ -12,7 +12,7 @@ This plugin targets **T3K** units — each T3K is one host with an n300 board:
 - 4 remote chips reachable via on-board Ethernet fabric
 - Total: 8 Wormhole chips per T3K
 
-Multiple T3K units can be linked externally (see [Multi-T3K](#multi-t3k-topology-future)).
+Multiple T3K units can be linked externally (see [Multi-node T3K](#multi-node-t3k)).
 
 ## Prerequisites
 
@@ -170,7 +170,7 @@ Device closed.
 SUCCESS: Wormhole hardware verified via DRA-allocated pod
 ```
 
-The pod mounts `/dev/hugepages-1G` from the host (required for Wormhole remote chip Ethernet fabric). DRA injects the `/dev/tenstorrent/*` device nodes and env vars.
+The pod mounts `/dev/hugepages-1G` from the host (required for Wormhole remote chip Ethernet fabric). DRA injects the `/dev/tenstorrent/*` device nodes and env vars. No `privileged: true` is needed — the CDI spec includes the device `type`, `major`, `minor`, and `permissions` fields so containerd updates the container's cgroup device allowlist directly, equivalent to Docker's `--device /dev/tenstorrent` flag.
 
 ## Project layout
 
@@ -178,7 +178,7 @@ The pod mounts `/dev/hugepages-1G` from the host (required for Wormhole remote c
 cmd/wh-dra-kubelet-plugin/
   main.go        # Flags, kubeconfig/in-cluster config, Prometheus, signal handling
   driver.go      # Plugin startup, ResourceSlice publication
-  manager.go     # Reads node labels, walks /dev/tenstorrent/, validates chip count
+  manager.go     # Reads node labels, walks /dev/tenstorrent/, stats each device node (type/major/minor)
   state.go       # PrepareResourceClaims / UnprepareResourceClaims
   cdi.go         # Writes CDI YAML spec files to /var/run/cdi/
   checkpoint.go  # Crash recovery: checkpoint.json with boot ID validation
@@ -193,6 +193,10 @@ deploy/
   test-claim.yaml    # Smoke test: ResourceClaim + Pod (device injection only)
   test-ttnn.yaml     # Hardware test: ResourceClaim + Pod running real ttnn ops
   test-two-jobs.yaml # Exclusivity test: two Jobs + ResourceClaimTemplate (recommended pattern)
+  multinode/
+    node-labels.sh              # Label 2 T3K nodes (isolated or connected)
+    test-statefulset-two-t3k.yaml  # 2 independent workers via StatefulSet
+    test-mpi-two-t3k.yaml          # 2 coordinated workers via MPIJob (needs MPI Operator)
 ```
 
 ## Step 7 — Exclusivity test: two Jobs, one device
@@ -243,7 +247,7 @@ Each auto-created claim is owned by its pod (ownerReference). When the pod is de
 1. **Startup**: plugin reads node labels, walks `/dev/tenstorrent/`, validates chip count, then calls `kubeletplugin.Start()` and publishes a `ResourceSlice` with one device (`wormhole-t3k`) and its attributes.
 2. **Pod scheduling**: scheduler finds a node whose ResourceSlice satisfies the pod's ResourceClaim and binds them.
 3. **PrepareResourceClaims**: kubelet calls the plugin before starting the container. Plugin writes a per-claim CDI spec file (`/var/run/cdi/k8s.wormhole.tenstorrent.com-t3k-<claimUID>.yaml`) listing the `/dev/tenstorrent/*` device nodes. State is checkpointed to survive plugin restarts.
-4. **Container start**: containerd reads CDI spec files and injects the listed device nodes and env vars into the container.
+4. **Container start**: containerd reads CDI spec files, injects the listed device nodes into the container's mount namespace, and updates the cgroup device allowlist using the `type/major/minor/permissions` fields — equivalent to `docker run --device`. No `privileged: true` needed in the pod spec.
 5. **UnprepareResourceClaims**: kubelet calls after the pod exits. Plugin deletes the per-claim CDI file and removes the claim from the checkpoint.
 
 ## CDI spec files
@@ -253,7 +257,7 @@ Two files are written to `/var/run/cdi/`:
 | File | Written | Contents |
 |---|---|---|
 | `k8s.wormhole.tenstorrent.com-t3k-common.yaml` | Once at startup | Node-level env vars (`TT_MESH_HOST_RANK`, `TT_CHIP_COUNT`, etc.) |
-| `k8s.wormhole.tenstorrent.com-t3k-<claimUID>.yaml` | Per PrepareResourceClaims | `/dev/tenstorrent/0..N` device nodes + `WH_RESOURCE_CLAIM_UID` |
+| `k8s.wormhole.tenstorrent.com-t3k-<claimUID>.yaml` | Per PrepareResourceClaims | `/dev/tenstorrent/0..N` device nodes (with `type`, `major`, `minor`, `permissions: rw`) + `WH_RESOURCE_CLAIM_UID` |
 
 ## Environment variables injected into pods
 
@@ -299,9 +303,58 @@ Another process left the chip in a bad state. Reset all boards:
 /home/ubuntu/miniconda3/envs/moreh/bin/tt-smi -r all
 ```
 
-## Multi-T3K topology (future)
+## Multi-node T3K
 
-With external Ethernet links between two T3K units, update labels to `pod-size=2` and `host-rank=0/1`. Use `matchAttribute` in the ResourceClaim to co-schedule both hosts:
+### Two isolated T3K units (no external Ethernet link)
+
+Each T3K is an independent device on its own Kubernetes node. Workers communicate via regular pod networking.
+
+**Step 1 — label both nodes:**
+```bash
+bash deploy/multinode/node-labels.sh <node-a> <node-b>
+```
+
+This sets `physical-pod=t3k-a` and `physical-pod=t3k-b` on the two nodes. The DaemonSet picks up new nodes automatically (nodeSelector: `tenstorrent.com/arch=wormhole`).
+
+**Step 2 — choose a workload pattern:**
+
+| File | When to use |
+|---|---|
+| `deploy/multinode/test-statefulset-two-t3k.yaml` | Independent workers, no MPI needed |
+| `deploy/multinode/test-mpi-two-t3k.yaml` | Coordinated MPI job (requires MPI Operator) |
+
+The scheduler places each worker pod on a separate T3K node automatically — no node affinity rules needed. Each pod gets its own claim from `ResourceClaimTemplate`.
+
+**StatefulSet (simple):**
+```bash
+kubectl apply -f deploy/multinode/test-statefulset-two-t3k.yaml
+kubectl logs wh-t3k-worker-0   # running on t3k-a
+kubectl logs wh-t3k-worker-1   # running on t3k-b
+kubectl delete -f deploy/multinode/test-statefulset-two-t3k.yaml
+```
+
+**MPIJob (coordinated):**
+```bash
+# Install MPI Operator once:
+kubectl apply -f https://raw.githubusercontent.com/kubeflow/mpi-operator/v0.5.0/deploy/v2beta1/mpi-operator.yaml
+
+kubectl apply -f deploy/multinode/test-mpi-two-t3k.yaml
+kubectl logs -l training.kubeflow.org/job-role=launcher -f
+kubectl delete -f deploy/multinode/test-mpi-two-t3k.yaml
+```
+
+### Two T3K units with external Ethernet link (connected mesh)
+
+When the two T3K units are physically connected via external Ethernet cables, they form a single 16-chip mesh. Update labels to reflect this:
+
+```bash
+kubectl label node <node-a> tenstorrent.com/pod-size=2 tenstorrent.com/host-rank=0 --overwrite
+kubectl label node <node-b> tenstorrent.com/pod-size=2 tenstorrent.com/host-rank=1 --overwrite
+# same physical-pod on both nodes:
+kubectl label node <node-a> <node-b> tenstorrent.com/physical-pod=t3k-ab --overwrite
+```
+
+Then use `matchAttribute` in the ResourceClaim to ensure both nodes are co-scheduled:
 
 ```yaml
 devices:

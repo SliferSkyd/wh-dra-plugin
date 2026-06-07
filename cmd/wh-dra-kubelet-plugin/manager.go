@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,6 +26,14 @@ const (
 	devTenstorrentDir = "/dev/tenstorrent"
 )
 
+// DeviceNode holds the path and cgroup metadata for a single /dev/tenstorrent/N entry.
+type DeviceNode struct {
+	Path  string
+	Type  string // "c" (character device)
+	Major int64
+	Minor int64
+}
+
 // WHManager holds hardware facts derived from node labels and /dev/tenstorrent/.
 type WHManager struct {
 	nodeName      string
@@ -35,7 +44,7 @@ type WHManager struct {
 	hostRank      int
 	podSize       int
 	ethernetIface string
-	deviceNodes   []string // e.g. ["/dev/tenstorrent/0", ..., "/dev/tenstorrent/3"]
+	deviceNodes   []DeviceNode // e.g. [{"/dev/tenstorrent/0", "c", 236, 0}, ...]
 }
 
 func NewWHManager(ctx context.Context, nodeName string, k8s kubernetes.Interface) (*WHManager, error) {
@@ -106,12 +115,26 @@ func (m *WHManager) discoverDevices() error {
 		return fmt.Errorf("read %s: %w", devTenstorrentDir, err)
 	}
 
-	var nodes []string
+	var nodes []DeviceNode
 	for _, e := range entries {
 		if e.IsDir() {
 			continue // skip by-id/
 		}
-		nodes = append(nodes, filepath.Join(devTenstorrentDir, e.Name()))
+		path := filepath.Join(devTenstorrentDir, e.Name())
+		var st syscall.Stat_t
+		if err := syscall.Stat(path, &st); err != nil {
+			return fmt.Errorf("stat %s: %w", path, err)
+		}
+		devType := "c"
+		if st.Mode&syscall.S_IFMT == syscall.S_IFBLK {
+			devType = "b"
+		}
+		nodes = append(nodes, DeviceNode{
+			Path:  path,
+			Type:  devType,
+			Major: int64((st.Rdev >> 8) & 0xfff),
+			Minor: int64(st.Rdev & 0xff),
+		})
 	}
 
 	// Hard validation: label must match reality.

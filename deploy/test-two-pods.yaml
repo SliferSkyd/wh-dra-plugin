@@ -46,8 +46,7 @@ spec:
     resources:
       claims:
       - name: t3k
-    securityContext:
-      privileged: true
+    securityContext: {}
 ---
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaim
@@ -85,5 +84,4 @@ spec:
     resources:
       claims:
       - name: t3k
-    securityContext:
-      privileged: true
+    securityContext: {}
