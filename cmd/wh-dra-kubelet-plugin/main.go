@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/client-go/kubernetes"
@@ -17,12 +18,14 @@ import (
 )
 
 type config struct {
-	nodeName      string
-	pluginDir     string
-	registrarDir  string
-	cdiDir        string
-	checkpointDir string
-	metricsPort   int
+	nodeName        string
+	pluginDir       string
+	registrarDir    string
+	cdiDir          string
+	checkpointDir   string
+	metricsPort     int
+	ttSmiPath       string
+	healthInterval  time.Duration
 }
 
 func main() {
@@ -35,6 +38,8 @@ func main() {
 	flag.StringVar(&cfg.cdiDir, "cdi-dir", "/var/run/cdi", "CDI spec directory")
 	flag.StringVar(&cfg.checkpointDir, "checkpoint-dir", "/var/lib/wh-dra/checkpoint", "Checkpoint directory")
 	flag.IntVar(&cfg.metricsPort, "metrics-port", 9090, "Prometheus metrics HTTP port")
+	flag.StringVar(&cfg.ttSmiPath, "tt-smi-path", "", "Path to tt-smi binary; empty disables health monitoring")
+	flag.DurationVar(&cfg.healthInterval, "health-check-interval", 30*time.Second, "How often to run tt-smi health checks (0 to disable)")
 	var kubeconfig string
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig (leave empty to use in-cluster config)")
 	flag.Parse()
@@ -67,6 +72,8 @@ func main() {
 		klog.Fatalf("init driver: %v", err)
 	}
 	defer d.Stop()
+
+	d.startHealthMonitoring(ctx, cfg.ttSmiPath, cfg.healthInterval)
 
 	// Prometheus metrics endpoint.
 	go func() {

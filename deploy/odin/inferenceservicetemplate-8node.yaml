@@ -1,0 +1,51 @@
+# InferenceServiceTemplate: Tenstorrent Wormhole — 8-node logical pod
+#
+# Topology: 8 T3K hosts × 8 chips = 64 chips total (one full physical Galaxy pod)
+#           Connected: 8-node torus (16×16 chip), 100 GbE frontend network
+#           Isolated: 8 independent T3K nodes, data-parallel via host TCP/IP
+# Workload:  LeaderWorkerSet — 8 workers, 1 T3K per worker
+#
+# What this template provides:
+#   - parallelism: data=8, dataLocal=1  →  LWS with 8 worker pods
+#   - Node selection: tenstorrent Wormhole
+#   - DRA ResourceClaim per worker pod
+#   - hugepages-1G injected via CDI (no hostPath volume needed in pod spec)
+#   - hostNetwork: true
+#
+# Prerequisite:
+#   kubectl apply -n <namespace> -f deploy/odin/resourceclaimtemplate.yaml
+#
+# Usage:
+#   templateRefs:
+#     - name: vllm-wormhole-runtime   # runtime-base (image + command)
+#     - name: vllm-wormhole-8node     # this template (hardware config)
+---
+apiVersion: odin.moreh.io/v1alpha1
+kind: InferenceServiceTemplate
+metadata:
+  name: vllm-wormhole-8node
+  namespace: mif
+  labels:
+    mif.moreh.io/template.type: preset
+spec:
+  parallelism:
+    data: 8
+    dataLocal: 1
+  workerTemplate:
+    spec:
+      hostNetwork: true
+      nodeSelector:
+        moai.moreh.io/accelerator.vendor: tenstorrent
+        moai.moreh.io/accelerator.model: wormhole
+      tolerations:
+      - key: node.kubernetes.io/disk-pressure
+        operator: Exists
+        effect: NoSchedule
+      resourceClaims:
+      - name: t3k
+        resourceClaimTemplateName: wh-t3k-template
+      containers:
+      - name: main
+        resources:
+          claims:
+          - name: t3k

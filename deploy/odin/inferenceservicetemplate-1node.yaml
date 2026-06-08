@@ -1,0 +1,51 @@
+# InferenceServiceTemplate: Tenstorrent Wormhole — 1-node logical pod
+#
+# Topology: 1 T3K host × 8 chips (4 PCIe-local + 4 remote via on-board Ethernet)
+# Workload:  Deployment (single pod, no LWS)
+#
+# What this template provides:
+#   - Node selection: tenstorrent Wormhole with pod-size=1
+#   - DRA ResourceClaim for the T3K device (injects /dev/tenstorrent/* + env vars)
+#   - hugepages-1G injected via CDI (no hostPath volume needed in pod spec)
+#   - hostNetwork: true (required for Wormhole Ethernet fabric)
+#
+# What the runtime-base template must provide (vllm-wormhole-runtime or equivalent):
+#   - container image (Moreh vLLM for Tenstorrent)
+#   - command / ISVC_* env vars
+#   - tensor-parallel-size (up to 8 chips on a single T3K)
+#
+# Prerequisite:
+#   kubectl apply -n <namespace> -f deploy/odin/resourceclaimtemplate.yaml
+#
+# Usage:
+#   templateRefs:
+#     - name: vllm-wormhole-runtime   # runtime-base (image + command)
+#     - name: vllm-wormhole-1node     # this template (hardware config)
+---
+apiVersion: odin.moreh.io/v1alpha1
+kind: InferenceServiceTemplate
+metadata:
+  name: vllm-wormhole-1node
+  namespace: mif
+  labels:
+    mif.moreh.io/template.type: preset
+spec:
+  template:
+    spec:
+      hostNetwork: true
+      nodeSelector:
+        moai.moreh.io/accelerator.vendor: tenstorrent
+        moai.moreh.io/accelerator.model: wormhole
+        tenstorrent.com/pod-size: "1"
+      tolerations:
+      - key: node.kubernetes.io/disk-pressure
+        operator: Exists
+        effect: NoSchedule
+      resourceClaims:
+      - name: t3k
+        resourceClaimTemplateName: wh-t3k-template
+      containers:
+      - name: main
+        resources:
+          claims:
+          - name: t3k

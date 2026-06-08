@@ -1,0 +1,20 @@
+# ResourceClaimTemplate for Tenstorrent T3K devices.
+#
+# This template must exist in every namespace where an InferenceService is deployed.
+# Each pod created by Odin automatically instantiates its own ResourceClaim from
+# this template (one claim per pod, GC'd when the pod is deleted).
+#
+# Apply to each workload namespace:
+#   kubectl apply -n <namespace> -f deploy/odin/resourceclaimtemplate.yaml
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: wh-t3k-template
+spec:
+  spec:
+    devices:
+      requests:
+      - name: t3k
+        exactly:
+          deviceClassName: t3k.wormhole.tenstorrent.com

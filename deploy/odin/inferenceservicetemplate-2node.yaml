@@ -1,0 +1,56 @@
+# InferenceServiceTemplate: Tenstorrent Wormhole — 2-node logical pod
+#
+# Topology: 2 T3K hosts × 8 chips = 16 chips total
+#           Isolated (no external Ethernet link): workers communicate via host TCP/IP
+#           Connected (with Ethernet link): mesh topology, chip-to-chip communication
+# Workload:  LeaderWorkerSet — 2 workers, 1 T3K per worker
+#
+# What this template provides:
+#   - parallelism: data=2, dataLocal=1  →  LWS with 2 worker pods
+#   - Node selection: tenstorrent Wormhole
+#   - DRA ResourceClaim per worker pod (each worker gets its own T3K)
+#   - hugepages-1G injected via CDI (no hostPath volume needed in pod spec)
+#   - hostNetwork: true
+#
+# What the runtime-base template must provide:
+#   - container image
+#   - command using LWS_LEADER_ADDRESS, LWS_WORKER_INDEX for coordination
+#   - data-parallel-size / data-parallel-rank flags
+#
+# Prerequisite:
+#   kubectl apply -n <namespace> -f deploy/odin/resourceclaimtemplate.yaml
+#
+# Usage:
+#   templateRefs:
+#     - name: vllm-wormhole-runtime   # runtime-base (image + command)
+#     - name: vllm-wormhole-2node     # this template (hardware config)
+---
+apiVersion: odin.moreh.io/v1alpha1
+kind: InferenceServiceTemplate
+metadata:
+  name: vllm-wormhole-2node
+  namespace: mif
+  labels:
+    mif.moreh.io/template.type: preset
+spec:
+  parallelism:
+    data: 2
+    dataLocal: 1
+  workerTemplate:
+    spec:
+      hostNetwork: true
+      nodeSelector:
+        moai.moreh.io/accelerator.vendor: tenstorrent
+        moai.moreh.io/accelerator.model: wormhole
+      tolerations:
+      - key: node.kubernetes.io/disk-pressure
+        operator: Exists
+        effect: NoSchedule
+      resourceClaims:
+      - name: t3k
+        resourceClaimTemplateName: wh-t3k-template
+      containers:
+      - name: main
+        resources:
+          claims:
+          - name: t3k

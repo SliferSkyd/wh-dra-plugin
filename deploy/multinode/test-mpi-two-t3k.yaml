@@ -1,0 +1,96 @@
+# MPIJob: 2 workers, each allocated one isolated T3K device via DRA.
+#
+# Prerequisites:
+#   - 2 nodes labeled tenstorrent.com/arch=wormhole (see node-labels.sh)
+#   - MPI Operator installed: kubectl apply -f https://raw.githubusercontent.com/kubeflow/mpi-operator/v0.5.0/deploy/v2beta1/mpi-operator.yaml
+#   - wh-dra-kubelet-plugin DaemonSet running on both nodes
+#
+# Each worker pod gets its own ResourceClaim auto-created from wh-t3k-template.
+# The scheduler places worker-0 on one T3K node and worker-1 on the other.
+# Workers communicate via regular pod networking (not Wormhole Ethernet fabric,
+# since the two T3K units have no external link between them).
+#
+# Run:
+#   kubectl apply -f deploy/multinode/test-mpi-two-t3k.yaml
+#   kubectl get mpijob wh-mpi-two-t3k
+#   kubectl logs -l training.kubeflow.org/job-name=wh-mpi-two-t3k,training.kubeflow.org/job-role=launcher
+#   kubectl delete -f deploy/multinode/test-mpi-two-t3k.yaml
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: wh-t3k-mpi-template
+spec:
+  spec:
+    devices:
+      requests:
+      - name: t3k
+        exactly:
+          deviceClassName: t3k.wormhole.tenstorrent.com
+---
+apiVersion: kubeflow.org/v2beta1
+kind: MPIJob
+metadata:
+  name: wh-mpi-two-t3k
+spec:
+  slotsPerWorker: 1
+  runPolicy:
+    cleanPodPolicy: Running
+    ttlSecondsAfterFinished: 30
+  mpiImplementation: OpenMPI
+  mpiReplicaSpecs:
+    Launcher:
+      replicas: 1
+      template:
+        spec:
+          containers:
+          - name: launcher
+            image: npu-metal-llk:latest
+            imagePullPolicy: Never
+            command: ["/bin/bash", "-c"]
+            args:
+            - |
+              echo "=== MPI launcher: running 2-worker job ==="
+              mpirun \
+                --allow-run-as-root \
+                -np 2 \
+                -bind-to none \
+                -map-by slot \
+                python3 -c "
+              from mpi4py import MPI
+              import os
+
+              comm = MPI.COMM_WORLD
+              rank = comm.Get_rank()
+              size = comm.Get_size()
+
+              host = os.uname().nodename
+              chip_count = os.environ.get('TT_CHIP_COUNT', 'unknown')
+              physical_pod = os.environ.get('TT_PHYSICAL_POD', 'unknown')
+              claim_uid = os.environ.get('WH_RESOURCE_CLAIM_UID', 'unknown')
+
+              print(f'[rank {rank}/{size}] host={host} T3K={physical_pod} chips={chip_count} claim={claim_uid}')
+              comm.Barrier()
+              if rank == 0:
+                  print('SUCCESS: both T3K workers reached barrier')
+              "
+    Worker:
+      replicas: 2
+      template:
+        spec:
+          hostNetwork: true
+          tolerations:
+          - key: node.kubernetes.io/disk-pressure
+            operator: Exists
+            effect: NoSchedule
+          resourceClaims:
+          - name: t3k
+            resourceClaimTemplateName: wh-t3k-mpi-template
+          containers:
+          - name: worker
+            image: npu-metal-llk:latest
+            imagePullPolicy: Never
+            resources:
+              claims:
+              - name: t3k
+            securityContext: {}

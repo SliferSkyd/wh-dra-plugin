@@ -170,17 +170,18 @@ Device closed.
 SUCCESS: Wormhole hardware verified via DRA-allocated pod
 ```
 
-The pod mounts `/dev/hugepages-1G` from the host (required for Wormhole remote chip Ethernet fabric). DRA injects the `/dev/tenstorrent/*` device nodes and env vars. No `privileged: true` is needed — the CDI spec includes the device `type`, `major`, `minor`, and `permissions` fields so containerd updates the container's cgroup device allowlist directly, equivalent to Docker's `--device /dev/tenstorrent` flag.
+DRA injects the `/dev/tenstorrent/*` device nodes, `/dev/hugepages-1G`, and env vars into the container via CDI — no `privileged: true` and no `hostPath` volume needed in the pod spec. The CDI spec includes the device `type`, `major`, `minor`, and `permissions` fields so containerd updates the cgroup device allowlist directly, equivalent to `docker run --device /dev/tenstorrent`.
 
 ## Project layout
 
 ```
 cmd/wh-dra-kubelet-plugin/
   main.go        # Flags, kubeconfig/in-cluster config, Prometheus, signal handling
-  driver.go      # Plugin startup, ResourceSlice publication
+  driver.go      # Plugin startup, ResourceSlice publication, health-triggered republication
   manager.go     # Reads node labels, walks /dev/tenstorrent/, stats each device node (type/major/minor)
   state.go       # PrepareResourceClaims / UnprepareResourceClaims
   cdi.go         # Writes CDI YAML spec files to /var/run/cdi/
+  health.go      # Periodic tt-smi health checker (heartbeat monitoring)
   checkpoint.go  # Crash recovery: checkpoint.json with boot ID validation
 pkg/
   flock/         # Cross-process file lock (safe during rolling DaemonSet updates)
@@ -197,6 +198,14 @@ deploy/
     node-labels.sh              # Label 2 T3K nodes (isolated or connected)
     test-statefulset-two-t3k.yaml  # 2 independent workers via StatefulSet
     test-mpi-two-t3k.yaml          # 2 coordinated workers via MPIJob (needs MPI Operator)
+  odin/
+    node-labels.sh                       # Add moai.moreh.io labels for Odin node selection
+    resourceclaimtemplate.yaml           # ResourceClaimTemplate (apply per workload namespace)
+    inferenceservicetemplate-1node.yaml  # Odin preset: 1 T3K, 8 chips (Deployment)
+    inferenceservicetemplate-2node.yaml  # Odin preset: 2 T3K, 16 chips (LWS, data=2)
+    inferenceservicetemplate-4node.yaml  # Odin preset: 4 T3K, 32 chips (LWS, data=4)
+    inferenceservicetemplate-8node.yaml  # Odin preset: 8 T3K, 64 chips (LWS, data=8)
+    example-inferenceservice.yaml        # Example InferenceService for all 4 sizes
 ```
 
 ## Step 7 — Exclusivity test: two Jobs, one device
@@ -247,8 +256,9 @@ Each auto-created claim is owned by its pod (ownerReference). When the pod is de
 1. **Startup**: plugin reads node labels, walks `/dev/tenstorrent/`, validates chip count, then calls `kubeletplugin.Start()` and publishes a `ResourceSlice` with one device (`wormhole-t3k`) and its attributes.
 2. **Pod scheduling**: scheduler finds a node whose ResourceSlice satisfies the pod's ResourceClaim and binds them.
 3. **PrepareResourceClaims**: kubelet calls the plugin before starting the container. Plugin writes a per-claim CDI spec file (`/var/run/cdi/k8s.wormhole.tenstorrent.com-t3k-<claimUID>.yaml`) listing the `/dev/tenstorrent/*` device nodes. State is checkpointed to survive plugin restarts.
-4. **Container start**: containerd reads CDI spec files, injects the listed device nodes into the container's mount namespace, and updates the cgroup device allowlist using the `type/major/minor/permissions` fields — equivalent to `docker run --device`. No `privileged: true` needed in the pod spec.
+4. **Container start**: containerd reads CDI spec files, injects the device nodes, `/dev/hugepages-1G`, and env vars into the container. Device allowlist is updated via `type/major/minor/permissions` — equivalent to `docker run --device`. No `privileged: true` needed in the pod spec.
 5. **UnprepareResourceClaims**: kubelet calls after the pod exits. Plugin deletes the per-claim CDI file and removes the claim from the checkpoint.
+6. **Health monitoring** (if `--tt-smi-path` is set): a background goroutine runs `tt-smi -s` every `--health-check-interval` (default 30 s). If any chip's heartbeat stops increasing, the plugin republishes the ResourceSlice with an empty device list so the scheduler stops placing new workloads on this node. The slice is restored to normal once the heartbeat resumes.
 
 ## CDI spec files
 
@@ -256,7 +266,7 @@ Two files are written to `/var/run/cdi/`:
 
 | File | Written | Contents |
 |---|---|---|
-| `k8s.wormhole.tenstorrent.com-t3k-common.yaml` | Once at startup | Node-level env vars (`TT_MESH_HOST_RANK`, `TT_CHIP_COUNT`, etc.) |
+| `k8s.wormhole.tenstorrent.com-t3k-common.yaml` | Once at startup | Node-level env vars (`TT_MESH_HOST_RANK`, `TT_CHIP_COUNT`, etc.) + `/dev/hugepages-1G` bind mount + `/tmp/tt_logs` bind mount |
 | `k8s.wormhole.tenstorrent.com-t3k-<claimUID>.yaml` | Per PrepareResourceClaims | `/dev/tenstorrent/0..N` device nodes (with `type`, `major`, `minor`, `permissions: rw`) + `WH_RESOURCE_CLAIM_UID` |
 
 ## Environment variables injected into pods

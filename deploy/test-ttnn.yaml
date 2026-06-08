@@ -59,11 +59,3 @@ spec:
       claims:
       - name: t3k
     securityContext: {}
-    volumeMounts:
-    - name: hugepages-1g
-      mountPath: /dev/hugepages-1G
-  volumes:
-  - name: hugepages-1g
-    hostPath:
-      path: /dev/hugepages-1G
-      type: Directory

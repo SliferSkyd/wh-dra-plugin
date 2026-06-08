@@ -1,0 +1,146 @@
+# Example InferenceService for Tenstorrent Wormhole.
+#
+# Adjust templateRefs[0] to the runtime-base that matches the pod size:
+#
+#   Pod size   | Runtime-base template       | Hardware template
+#   -----------|-----------------------------|-----------------------
+#   1-node     | vllm-wormhole-runtime       | vllm-wormhole-1node
+#   2-node     | vllm-wormhole-runtime-dp    | vllm-wormhole-2node
+#   4-node     | vllm-wormhole-runtime-dp    | vllm-wormhole-4node
+#   8-node     | vllm-wormhole-runtime-dp    | vllm-wormhole-8node
+#
+# The runtime-base templates (vllm-wormhole-runtime, vllm-wormhole-runtime-dp)
+# are to be provided by the NPU team in Seoul. They define:
+#   - container image (Moreh vLLM for Tenstorrent)
+#   - startup command + LWS_LEADER_ADDRESS / LWS_WORKER_INDEX handling
+#   - tensor-parallel-size, data-parallel-size flags
+#
+# Prerequisites:
+#   1. wh-dra-kubelet-plugin DaemonSet running on all T3K nodes
+#   2. moai.moreh.io labels on nodes:
+#        bash deploy/odin/node-labels.sh <node-1> [<node-2> ...]
+#   3. ResourceClaimTemplate in the workload namespace:
+#        kubectl apply -n <namespace> -f deploy/odin/resourceclaimtemplate.yaml
+#   4. Odin operator installed (moai-inference-framework Helm chart)
+#   5. These InferenceServiceTemplates applied to the mif namespace:
+#        kubectl apply -n mif -f deploy/odin/inferenceservicetemplate-1node.yaml
+#        kubectl apply -n mif -f deploy/odin/inferenceservicetemplate-2node.yaml
+#        kubectl apply -n mif -f deploy/odin/inferenceservicetemplate-4node.yaml
+#        kubectl apply -n mif -f deploy/odin/inferenceservicetemplate-8node.yaml
+
+---
+# 1-node example: single T3K, 8 chips
+apiVersion: odin.moreh.io/v1alpha1
+kind: InferenceService
+metadata:
+  name: glm-wormhole-1node
+  namespace: inference
+spec:
+  replicas: 1
+  inferencePoolRefs:
+  - name: heimdall
+  templateRefs:
+  - name: vllm-wormhole-runtime    # runtime-base: image + command (NPU team provides)
+  - name: vllm-wormhole-1node      # hardware: DRA claim + hugepages + node selector
+  parallelism:
+    tensor: 8                      # 8 chips on a single T3K
+  template:
+    spec:
+      containers:
+      - name: main
+        env:
+        - name: ISVC_MODEL_NAME
+          value: THUDM/glm-4-9b-chat
+        - name: ISVC_EXTRA_ARGS
+          value: >-
+            --disable-uvicorn-access-log
+            --no-enable-log-requests
+        - name: HF_TOKEN
+          value: <huggingFaceToken>
+---
+# 2-node example: 2 T3K nodes, 16 chips total, data-parallel
+apiVersion: odin.moreh.io/v1alpha1
+kind: InferenceService
+metadata:
+  name: glm-wormhole-2node
+  namespace: inference
+spec:
+  replicas: 1
+  inferencePoolRefs:
+  - name: heimdall
+  templateRefs:
+  - name: vllm-wormhole-runtime-dp  # runtime-base with LWS/DP support
+  - name: vllm-wormhole-2node       # hardware: 2 T3K nodes, parallelism.data=2
+  parallelism:
+    tensor: 8                       # 8 chips per T3K node
+  workerTemplate:
+    spec:
+      containers:
+      - name: main
+        env:
+        - name: ISVC_MODEL_NAME
+          value: THUDM/glm-4-9b-chat
+        - name: ISVC_EXTRA_ARGS
+          value: >-
+            --disable-uvicorn-access-log
+            --no-enable-log-requests
+        - name: HF_TOKEN
+          value: <huggingFaceToken>
+---
+# 4-node example: 4 T3K nodes, 32 chips total, data-parallel
+apiVersion: odin.moreh.io/v1alpha1
+kind: InferenceService
+metadata:
+  name: glm-wormhole-4node
+  namespace: inference
+spec:
+  replicas: 1
+  inferencePoolRefs:
+  - name: heimdall
+  templateRefs:
+  - name: vllm-wormhole-runtime-dp
+  - name: vllm-wormhole-4node
+  parallelism:
+    tensor: 8
+  workerTemplate:
+    spec:
+      containers:
+      - name: main
+        env:
+        - name: ISVC_MODEL_NAME
+          value: THUDM/glm-4-9b-chat
+        - name: ISVC_EXTRA_ARGS
+          value: >-
+            --disable-uvicorn-access-log
+            --no-enable-log-requests
+        - name: HF_TOKEN
+          value: <huggingFaceToken>
+---
+# 8-node example: full Galaxy pod, 64 chips total, data-parallel
+apiVersion: odin.moreh.io/v1alpha1
+kind: InferenceService
+metadata:
+  name: glm-wormhole-8node
+  namespace: inference
+spec:
+  replicas: 1
+  inferencePoolRefs:
+  - name: heimdall
+  templateRefs:
+  - name: vllm-wormhole-runtime-dp
+  - name: vllm-wormhole-8node
+  parallelism:
+    tensor: 8
+  workerTemplate:
+    spec:
+      containers:
+      - name: main
+        env:
+        - name: ISVC_MODEL_NAME
+          value: THUDM/glm-4-9b-chat
+        - name: ISVC_EXTRA_ARGS
+          value: >-
+            --disable-uvicorn-access-log
+            --no-enable-log-requests
+        - name: HF_TOKEN
+          value: <huggingFaceToken>

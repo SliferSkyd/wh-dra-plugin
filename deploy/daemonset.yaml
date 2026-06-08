@@ -26,6 +26,8 @@ spec:
         - --cdi-dir=/var/run/cdi
         - --checkpoint-dir=/var/lib/wh-dra/checkpoint
         - --metrics-port=9090
+        - --tt-smi-path=/home/ubuntu/miniconda3/envs/moreh/bin/tt-smi
+        - --health-check-interval=30s
         env:
         - name: NODE_NAME
           valueFrom:
@@ -46,6 +48,12 @@ spec:
           mountPath: /dev/tenstorrent
         - name: checkpoint-dir
           mountPath: /var/lib/wh-dra/checkpoint
+        - name: miniconda
+          mountPath: /home/ubuntu/miniconda3
+        - name: tt-smi-src
+          mountPath: /home/ubuntu/tt-smi
+        - name: local-pylib
+          mountPath: /home/ubuntu/.local
       volumes:
       - name: plugin-binary
         hostPath:
@@ -71,3 +79,15 @@ spec:
         hostPath:
           path: /var/lib/wh-dra/checkpoint
           type: DirectoryOrCreate
+      - name: miniconda
+        hostPath:
+          path: /home/ubuntu/miniconda3
+          type: Directory
+      - name: tt-smi-src
+        hostPath:
+          path: /home/ubuntu/tt-smi
+          type: Directory
+      - name: local-pylib
+        hostPath:
+          path: /home/ubuntu/.local
+          type: Directory

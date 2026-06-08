@@ -72,6 +72,11 @@ func (h *CDIHandler) CreateCommonSpecFile() error {
 					Env: h.manager.CommonEnvs(),
 					Mounts: []cdiMount{
 						{
+							HostPath:      "/dev/hugepages-1G",
+							ContainerPath: "/dev/hugepages-1G",
+							Options:       []string{"bind", "rw", "nosuid", "nodev"},
+						},
+						{
 							HostPath:      "/tmp/tt_logs",
 							ContainerPath: "/tmp/tt_logs",
 							Options:       []string{"rw", "bind"},

@@ -1,0 +1,82 @@
+# StatefulSet: 2 replicas, each on a separate T3K node (no MPI Operator required).
+#
+# Simpler alternative to MPIJob for cases where workers don't need MPI coordination.
+# Each pod gets its own T3K device and communicates via the headless service DNS.
+#
+# Pod DNS:  wh-t3k-worker-0.wh-t3k-headless.<namespace>.svc.cluster.local
+#           wh-t3k-worker-1.wh-t3k-headless.<namespace>.svc.cluster.local
+#
+# Run:
+#   kubectl apply -f deploy/multinode/test-statefulset-two-t3k.yaml
+#   kubectl logs wh-t3k-worker-0
+#   kubectl logs wh-t3k-worker-1
+#   kubectl delete -f deploy/multinode/test-statefulset-two-t3k.yaml
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: wh-t3k-ss-template
+spec:
+  spec:
+    devices:
+      requests:
+      - name: t3k
+        exactly:
+          deviceClassName: t3k.wormhole.tenstorrent.com
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wh-t3k-headless
+spec:
+  clusterIP: None
+  selector:
+    app: wh-t3k-worker
+  ports:
+  - name: mpi
+    port: 22
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: wh-t3k-worker
+spec:
+  serviceName: wh-t3k-headless
+  replicas: 2
+  selector:
+    matchLabels:
+      app: wh-t3k-worker
+  template:
+    metadata:
+      labels:
+        app: wh-t3k-worker
+    spec:
+      hostNetwork: true
+      tolerations:
+      - key: node.kubernetes.io/disk-pressure
+        operator: Exists
+        effect: NoSchedule
+      resourceClaims:
+      - name: t3k
+        resourceClaimTemplateName: wh-t3k-ss-template
+      containers:
+      - name: worker
+        image: ubuntu:22.04
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          echo "=== $(hostname): T3K device allocated ==="
+          echo "Node:     $(cat /proc/sys/kernel/hostname)"
+          echo "Devices:  $(ls /dev/tenstorrent/)"
+          env | grep -E "^TT_|^WH_" | sort
+          echo ""
+          echo "Peer DNS:"
+          echo "  wh-t3k-worker-0.wh-t3k-headless"
+          echo "  wh-t3k-worker-1.wh-t3k-headless"
+          echo ""
+          echo "=== worker ready, sleeping ==="
+          sleep infinity
+        resources:
+          claims:
+          - name: t3k
+        securityContext: {}
