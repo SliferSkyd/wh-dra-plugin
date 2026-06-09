@@ -214,10 +214,14 @@ cmd/wh-dra-kubelet-plugin/
   manager.go     — reads node labels, walks /dev/tenstorrent/ to discover device nodes
   checkpoint.go  — persists PreparedClaims state to disk for crash recovery
 
+cmd/wh-node-labeler/
+  main.go        — runs tt-smi, reads tt-node-topology ConfigMap, patches node labels every 5m
+
 deploy/
-  rbac.yaml                  — ServiceAccount + ClusterRole (API permissions)
+  rbac.yaml                  — ServiceAccount + ClusterRole (API permissions for plugin)
   deviceclass.yaml           — DeviceClass: pods select this to request T3K
-  daemonset.yaml             — DaemonSet on tenstorrent.com/arch=wormhole nodes
+  node-labeler.yaml          — node labeler DaemonSet + tt-node-topology ConfigMap
+  daemonset.yaml             — plugin DaemonSet on tenstorrent.com/arch=wormhole nodes
   test-claim.yaml            — smoke test: device injection (no special image)
   test-two-pods.yaml         — exclusivity test: only one pod holds device at a time
   test-ttnn.yaml             — hardware test: real ttnn.add on silicon
@@ -274,7 +278,8 @@ User:  kubectl apply -f my-workload.yaml
   - control-plane-01 (192.168.1.60) — Ready
   - t3k-node-a (192.168.1.247) — Ready, labeled
 - [x] CDI enabled in containerd on t3k-node-a
-- [x] Plugin binary built and deployed as DaemonSet
+- [x] Self-contained container image (`wh-dra-kubelet-plugin:v0.1.0`) — plugin binary + `tt-smi` baked in, no host mounts
+- [x] Plugin deployed as DaemonSet
 - [x] ResourceSlice published and visible to scheduler
 
 ### Plugin Features
@@ -283,6 +288,7 @@ User:  kubectl apply -f my-workload.yaml
 - [x] Health monitoring via `tt-smi` heartbeat check (30s interval)
 - [x] Prometheus metrics at `:9090/metrics`
 - [x] Crash-recovery checkpoint
+- [x] Automatic node labeling (`wh-node-labeler` DaemonSet) — discovers arch/board/chip-count from tt-smi, reads topology from ConfigMap
 
 ### Tests Run
 - [x] **test-claim** — device injection verified (env vars + `/dev/tenstorrent/` in container)
@@ -298,14 +304,15 @@ User:  kubectl apply -f my-workload.yaml
 | Item | Notes |
 |---|---|
 | Run `test-ttnn.yaml` | Import `npu-metal-llk:latest` into containerd on t3k-node-a, then `kubectl apply` |
+| Test auto node labeling with t3k-node-b | Add ConfigMap entry, import image, verify labels applied automatically |
 | Fix VM network isolation | Control plane can't reach kubelet port 10250 on worker — `kubectl logs/exec` times out; workaround: `crictl logs` on node directly |
 | Add second T3K node | Required for multinode StatefulSet and MPI tests |
 
 ### Production hardening
 | Item | Notes |
 |---|---|
-| Bundle `tt-smi` as static binary | Currently the plugin mounts `/home/ubuntu/miniconda3` from host — not portable |
-| Build proper container image | Replace `ubuntu:22.04` + host binary mount with a self-contained image |
+| Set up container registry | Push `wh-dra-kubelet-plugin:v0.1.0` to Harbor/ACR so nodes pull automatically instead of manual `ctr import` |
+| CI/CD pipeline | Auto-build and push image on git push; auto-rollout to cluster |
 | Deploy Odin InferenceServiceTemplates | `deploy/odin/` presets ready; need MIF operator running |
 | MPI Operator setup | Required for `multinode/test-mpi-two-t3k.yaml` |
 | Fix `kubectl logs` networking | Investigate hypervisor port group / VLAN isolation between control plane VM and T3K node |
@@ -313,7 +320,10 @@ User:  kubectl apply -f my-workload.yaml
 ### Nice to have
 | Item | Notes |
 |---|---|
-| Automated node labeling | Script for adding all `tenstorrent.com/*` labels at cluster join time |
+| Deep hardware telemetry | Export temperature, power, utilization from `tt-smi -s` as Prometheus metrics |
+| Fault / error monitoring | Parse tt-kmd dmesg errors; detect silent hardware failures beyond heartbeat stall |
+| Graceful drain | On SIGTERM: publish empty ResourceSlice, wait for running workloads to finish |
+| Automatic Galaxy topology discovery | Auto-assign `physical-pod`/`host-rank`/`pod-size` via Tenstorrent Ethernet neighbor detection |
 | Helm chart | Package all deploy YAMLs for easier versioning |
 | Alerting | Wire Prometheus metrics to Alertmanager for health state changes |
 

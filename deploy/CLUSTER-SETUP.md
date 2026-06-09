@@ -260,43 +260,61 @@ sudo update-grub && sudo reboot
 
 ---
 
-## Step 4 — Label each T3K node
+## Step 4 — Configure node topology (one-time per node)
 
-The DaemonSet only schedules on nodes with `tenstorrent.com/arch=wormhole`.
-Node labels are wiped on fresh cluster installs — re-run this after every reset.
+The `wh-node-labeler` DaemonSet automatically labels T3K nodes with hardware info
+(`arch`, `board-type`, `chip-count`) discovered from `tt-smi`. The three topology labels
+(`physical-pod`, `host-rank`, `pod-size`) cannot be auto-detected — they describe your
+physical rack layout and must be set once in a ConfigMap.
 
-```bash
-kubectl label node t3k-node-a \
-  tenstorrent.com/arch=wormhole \
-  tenstorrent.com/board-type=n300 \
-  tenstorrent.com/chip-count=4 \
-  tenstorrent.com/physical-pod=t3k-a \
-  tenstorrent.com/host-rank=0 \
-  tenstorrent.com/pod-size=1
+Edit `deploy/node-labeler.yaml` and add an entry for each T3K node under the
+`tt-node-topology` ConfigMap data section:
 
-# For Odin / MoAI:
-kubectl label node t3k-node-a \
-  moai.moreh.io/accelerator.vendor=tenstorrent \
-  moai.moreh.io/accelerator.model=wormhole
+```yaml
+data:
+  t3k-node-a: "physical-pod=t3k-a host-rank=0 pod-size=1"
+  t3k-node-b: "physical-pod=t3k-a host-rank=1 pod-size=2"  # add new nodes here
 ```
 
-Repeat for each T3K node, incrementing `physical-pod` and `host-rank`.
+| Field | Meaning |
+|---|---|
+| `physical-pod` | Name of the logical Galaxy pod this server belongs to |
+| `host-rank` | 0-based position of this server within the pod |
+| `pod-size` | How many servers form this logical pod |
+
+If you leave a node out of the ConfigMap, the labeler uses safe defaults (`physical-pod=<nodename>`, `host-rank=0`, `pod-size=1`).
 
 ---
 
-## Step 5 — Build the plugin binary (on each T3K node)
+## Step 5 — Build and import the container image (on each T3K node)
 
-The `daemonset.yaml` mounts the binary directly from the host filesystem.
-It must exist at `/home/ubuntu/wh-dra-plugin/bin/wh-dra-kubelet-plugin` on each T3K node.
+The plugin and node labeler run from a self-contained Docker image that includes
+both binaries and `tt-smi` — no host mounts needed.
+
+**Build on the control plane** (or any machine with Docker and the repo):
 
 ```bash
 cd /home/ubuntu/wh-dra-plugin
-
-export PATH=$PATH:/home/ubuntu/go/bin
-export GOPATH=/home/ubuntu/gopath
-
-go build -o bin/wh-dra-kubelet-plugin ./cmd/wh-dra-kubelet-plugin
+docker buildx build \
+  --build-context tt-smi=/home/ubuntu/tt-smi \
+  -t wh-dra-kubelet-plugin:v0.1.0 \
+  --load \
+  .
 ```
+
+**Import into containerd on each T3K node** (needs sudo — run on the node):
+
+```bash
+docker save wh-dra-kubelet-plugin:v0.1.0 | sudo ctr -n k8s.io images import -
+```
+
+Verify:
+```bash
+sudo ctr -n k8s.io images ls | grep wh-dra
+```
+
+> **Note:** In the future this step will be replaced by pushing to a registry (Harbor/ACR)
+> so nodes pull automatically.
 
 ---
 
@@ -307,15 +325,24 @@ Run once from the deployment host:
 ```bash
 kubectl apply -f deploy/rbac.yaml
 kubectl apply -f deploy/deviceclass.yaml
+kubectl apply -f deploy/node-labeler.yaml   # node labeler + tt-node-topology ConfigMap
 kubectl apply -f deploy/daemonset.yaml
 ```
 
-The plugin DaemonSet automatically starts on every node labeled `tenstorrent.com/arch=wormhole`.
+The node labeler DaemonSet runs on every worker node. On non-T3K nodes it detects no
+`/dev/tenstorrent` devices and sleeps permanently. On T3K nodes it labels the node
+within seconds — then the plugin DaemonSet starts automatically.
 
 Verify:
 
 ```bash
-# Plugin pod running on each T3K node
+# Node labeler running on each node
+kubectl -n kube-system get pods -l app=wh-node-labeler
+
+# Labels applied to T3K nodes
+kubectl get node t3k-node-a --show-labels | tr ',' '\n' | grep tenstorrent
+
+# Plugin pod running on each T3K node (starts after labels are applied)
 kubectl -n kube-system get pods -l app=wh-dra-kubelet-plugin
 
 # Plugin logs — look for "published ResourceSlice" and "health monitoring started"
@@ -350,7 +377,7 @@ SUCCESS: Wormhole hardware verified via DRA-allocated pod
 
 ## Adding more T3K nodes later
 
-No changes to any YAML files needed. For each new node:
+For each new node:
 
 1. Add to `inventory/mycluster/hosts.yaml` under `kube_node`
 2. Copy SSH key: `ssh-copy-id ubuntu@<new-node-ip>`
@@ -363,10 +390,18 @@ No changes to any YAML files needed. For each new node:
    ```
 4. Enable CDI in containerd (Step 2)
 5. Verify hugepages (Step 3)
-6. Label the node (Step 4)
-7. Copy the plugin binary to `/home/ubuntu/wh-dra-plugin/bin/` on the new node
+6. Add the node's topology entry to the `tt-node-topology` ConfigMap:
+   ```bash
+   kubectl edit configmap tt-node-topology -n kube-system
+   # Add: t3k-node-b: "physical-pod=t3k-a host-rank=1 pod-size=1"
+   ```
+7. Import the plugin image on the new node:
+   ```bash
+   docker save wh-dra-kubelet-plugin:v0.1.0 | sudo ctr -n k8s.io images import -
+   ```
 
-The DaemonSet sees the new label and automatically starts a plugin pod within seconds.
+The node labeler DaemonSet detects the new node's hardware and applies labels automatically.
+The plugin DaemonSet then starts on the newly labeled node within seconds — no manifest changes needed.
 
 ---
 
@@ -377,12 +412,23 @@ The DaemonSet sees the new label and automatically starts a plugin pod within se
 kubectl -n kube-system get pods -l app=wh-dra-kubelet-plugin
 kubectl -n kube-system logs -l app=wh-dra-kubelet-plugin -f
 
+# Node labeler status
+kubectl -n kube-system get pods -l app=wh-node-labeler
+kubectl -n kube-system logs -l app=wh-node-labeler
+
+# Check node labels
+kubectl get node t3k-node-a --show-labels | tr ',' '\n' | grep -E 'tenstorrent|moai'
+
 # Device availability
 kubectl get resourceslices
 
-# Rebuild and redeploy after code change
-go build -o bin/wh-dra-kubelet-plugin ./cmd/wh-dra-kubelet-plugin
+# Rebuild image and redeploy after code change
+cd /home/ubuntu/wh-dra-plugin
+docker buildx build --build-context tt-smi=/home/ubuntu/tt-smi \
+  -t wh-dra-kubelet-plugin:v0.1.0 --load .
+# (on each T3K node) docker save wh-dra-kubelet-plugin:v0.1.0 | sudo ctr -n k8s.io images import -
 kubectl rollout restart daemonset/wh-dra-kubelet-plugin -n kube-system
+kubectl rollout restart daemonset/wh-node-labeler -n kube-system
 
 # Plugin metrics
 kubectl -n kube-system port-forward \
@@ -390,8 +436,8 @@ kubectl -n kube-system port-forward \
   9090:9090
 curl -s localhost:9090/metrics
 
-# Board reset (if firmware stuck)
-/home/ubuntu/miniconda3/envs/moreh/bin/tt-smi -r all
+# Board reset (if firmware stuck — run on the T3K node)
+tt-smi -r all
 ```
 
 ---
@@ -451,11 +497,18 @@ sed -i '' 's|server: https://127.0.0.1:6443|server: https://192.168.1.60:6443|' 
 
 ### DaemonSet pod not appearing after `kubectl apply`
 
-The node is missing the required label. Re-apply labels after any cluster reset:
+The node is missing the required label. Check that the node labeler is running and has
+applied labels:
 
 ```bash
-kubectl label node t3k-node-a tenstorrent.com/arch=wormhole ...
+kubectl -n kube-system get pods -l app=wh-node-labeler
+kubectl -n kube-system logs -l app=wh-node-labeler
+kubectl get node t3k-node-a --show-labels | grep tenstorrent
 ```
+
+If the labeler pod is not running (e.g. image not imported), import the image first (Step 5),
+then apply `deploy/node-labeler.yaml`. Labels are applied within seconds of the labeler pod
+starting.
 
 ### Pods stuck `Terminating` during `reset.yml`
 

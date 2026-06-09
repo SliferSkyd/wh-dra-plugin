@@ -266,7 +266,8 @@ published ResourceSlice: device wormhole-t3k with 4 chips on pool t3k-node-a
 **Infrastructure**
 - Kubernetes cluster deployed and running (v1.35.0, 2 nodes)
 - CDI enabled in containerd on t3k-node-a
-- Plugin binary built, DaemonSet deployed
+- Self-contained container image (`wh-dra-kubelet-plugin:v0.1.0`) — plugin + tt-smi baked in
+- Plugin DaemonSet deployed
 
 **Plugin features implemented**
 - ResourceSlice publication (device advertising to scheduler)
@@ -274,6 +275,7 @@ published ResourceSlice: device wormhole-t3k with 4 chips on pool t3k-node-a
 - tt-smi health monitoring with scheduler feedback
 - Prometheus metrics endpoint
 - Crash-recovery checkpoint
+- **Automatic node labeling** (`wh-node-labeler` DaemonSet) — no more manual `kubectl label`
 
 **Tests passed**
 | Test | Result | What it proves |
@@ -292,17 +294,26 @@ published ResourceSlice: device wormhole-t3k with 4 chips on pool t3k-node-a
 | Task | Blocker |
 |---|---|
 | Run `test-ttnn` hardware test | Import `npu-metal-llk:latest` into containerd |
-| Add second T3K node to cluster | Run `scale.yml` + label node |
+| Test auto node labeling with t3k-node-b | Add ConfigMap entry + import image on new node |
+| Add second T3K node to cluster | Run `scale.yml`; labeler handles labels automatically |
 | Fix `kubectl logs` timeout | VM network isolation — control plane can't reach port 10250 on worker |
 
 **Production hardening**
 
 | Task | Why |
 |---|---|
-| Bundle `tt-smi` as static binary in image | Current setup mounts conda env from host — not portable |
-| Build proper container image | Replace `ubuntu:22.04` + host binary mount |
+| Set up container registry (Harbor/ACR) | Nodes currently need manual `ctr import` after each build |
+| CI/CD pipeline | Auto-build + push + rollout on git push |
 | Deploy Odin InferenceServiceTemplates | YAML presets ready for 1/2/4/8 T3K configs |
 | MPI Operator setup | Required for distributed multi-node training jobs |
+
+**P1 gaps vs NVIDIA/TPU**
+
+| Gap | Impact |
+|---|---|
+| Deep hardware telemetry | No temperature / power / utilization visibility |
+| Fault monitoring | Silent hardware failures beyond heartbeat stall |
+| Graceful drain | Maintenance requires watching for running workloads manually |
 
 > **Speaker notes:** The `kubectl logs` timeout is a known infrastructure issue — the control plane VM and the T3K node are on different network segments and port 10250 (kubelet) is not routable between them. It doesn't affect workloads, only log streaming from the laptop. Workaround: `crictl logs` directly on the node.
 

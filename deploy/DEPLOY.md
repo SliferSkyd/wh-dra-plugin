@@ -9,6 +9,7 @@ What each YAML file does and when to apply it.
 ```
 rbac.yaml
 deviceclass.yaml
+node-labeler.yaml                       ← labels T3K nodes; plugin DaemonSet depends on these labels
 daemonset.yaml                          ← plugin must be running before any workload pod
 odin/resourceclaimtemplate.yaml         (repeat for every workload namespace)
 odin/inferenceservicetemplate-*.yaml
@@ -71,6 +72,54 @@ kubectl get deviceclass t3k.wormhole.tenstorrent.com
 
 ---
 
+### `node-labeler.yaml`
+
+Automatically labels T3K nodes with hardware metadata discovered at runtime.
+Apply this **before** `daemonset.yaml` — the plugin DaemonSet's `nodeSelector` depends on
+the labels this sets.
+
+Creates five objects:
+
+| Object | Name | Namespace |
+|---|---|---|
+| ServiceAccount | `wh-node-labeler` | `kube-system` |
+| ClusterRole | `wh-node-labeler` | — |
+| ClusterRoleBinding | `wh-node-labeler` | — |
+| ConfigMap | `tt-node-topology` | `kube-system` |
+| DaemonSet | `wh-node-labeler` | `kube-system` |
+
+The DaemonSet runs on every worker node. On non-T3K nodes (no `/dev/tenstorrent/` devices)
+it sleeps permanently and uses zero resources. On T3K nodes it runs `tt-smi -s`, reads the
+`tt-node-topology` ConfigMap, and patches the node with labels every 5 minutes.
+
+Labels applied automatically:
+
+| Label | Source |
+|---|---|
+| `tenstorrent.com/arch` | `tt-smi` board_type (wormhole / blackhole) |
+| `tenstorrent.com/board-type` | `tt-smi` board_type (n300, n150, …) |
+| `tenstorrent.com/chip-count` | Count of `/dev/tenstorrent/` entries |
+| `tenstorrent.com/physical-pod` | `tt-node-topology` ConfigMap |
+| `tenstorrent.com/host-rank` | `tt-node-topology` ConfigMap |
+| `tenstorrent.com/pod-size` | `tt-node-topology` ConfigMap |
+| `moai.moreh.io/accelerator.vendor` | Hardcoded `tenstorrent` |
+| `moai.moreh.io/accelerator.model` | Same as arch |
+
+**Configuring topology for a new node** — edit the ConfigMap (no pod restart needed):
+
+```bash
+kubectl edit configmap tt-node-topology -n kube-system
+# Add: t3k-node-b: "physical-pod=t3k-a host-rank=1 pod-size=1"
+```
+
+```bash
+kubectl apply -f deploy/node-labeler.yaml
+kubectl -n kube-system get pods -l app=wh-node-labeler
+kubectl get node t3k-node-a --show-labels | tr ',' '\n' | grep tenstorrent
+```
+
+---
+
 ### `daemonset.yaml`
 
 Runs the plugin binary on every T3K node. This is the object that does all the work.
@@ -80,26 +129,22 @@ Key details:
 | Field | Value | Why |
 |---|---|---|
 | Namespace | `kube-system` | System-level workload |
-| `nodeSelector` | `tenstorrent.com/arch=wormhole` | Only runs on labeled T3K nodes |
+| `nodeSelector` | `tenstorrent.com/arch=wormhole` | Only runs on labeled T3K nodes (set by wh-node-labeler) |
 | `priorityClassName` | `system-node-critical` | Starts before workload pods |
 | `securityContext.privileged` | `true` | Needed to write CDI specs and access `/dev/tenstorrent` |
+| `image` | `wh-dra-kubelet-plugin:v0.1.0` | Self-contained — includes plugin binary + tt-smi |
 
 Volume mounts:
 
 | Name | Host path | Container path | Purpose |
 |---|---|---|---|
-| `plugin-binary` | `/home/ubuntu/wh-dra-plugin/bin` | `/plugin` | The compiled plugin binary |
 | `plugin-dir` | `/var/lib/kubelet/plugins/wormhole.tenstorrent.com` | same | kubelet plugin socket |
 | `registrar-dir` | `/var/lib/kubelet/plugins_registry` | same | kubelet plugin registration |
 | `cdi-dir` | `/var/run/cdi` | same | CDI spec files |
 | `dev-tenstorrent` | `/dev/tenstorrent` | same | Hardware device nodes |
 | `checkpoint-dir` | `/var/lib/wh-dra/checkpoint` | same | Crash-recovery state |
-| `miniconda` | `/home/ubuntu/miniconda3` | same | Python runtime for tt-smi |
-| `tt-smi-src` | `/home/ubuntu/tt-smi` | same | tt-smi editable install source |
-| `local-pylib` | `/home/ubuntu/.local` | same | tt_tools_common Python packages |
 
-The last three mounts (miniconda, tt-smi-src, local-pylib) are dev-machine specific.
-In production, `tt-smi` should be bundled as a static binary in the container image.
+No host mounts for Python, conda, or binaries — all baked into the image.
 
 ```bash
 kubectl apply -f deploy/daemonset.yaml

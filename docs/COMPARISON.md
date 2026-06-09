@@ -14,6 +14,7 @@
 | **Scheduler feedback on unhealthy node** | ✅ | ✅ | ✅ | Empty ResourceSlice / taint |
 | **Prometheus metrics** | ✅ | ✅ | ✅ | We have basic metrics; NVIDIA has ~100 |
 | **Automatic node labeling** | ✅ (GFD) | ✅ | ❌ | We require manual `kubectl label` |
+| **Automatic topology discovery** | ✅ (NVLink topo) | ✅ | ❌ | physical-pod / host-rank / pod-size must be set manually in ConfigMap |
 | **Automatic driver installation** | ✅ | ✅ (GKE managed) | ❌ | tt-kmd must be pre-installed manually |
 | **Deep hardware telemetry** | ✅ (DCGM) | ✅ | ❌ | Temperature, power, utilization, ECC, bandwidth |
 | **Per-pod hardware metrics** | ✅ | ✅ | ❌ | Which pod is using how much chip capacity |
@@ -89,6 +90,25 @@
 **Impact:** No chargeback, no capacity planning, no "who is hogging the T3K" visibility.
 
 **Fix:** Map prepared claim UIDs to pod names via the Kubernetes API, then export per-pod chip utilization from `tt-smi`.
+
+---
+
+### ❌ Automatic topology discovery
+
+**NVIDIA:** NVLink topology detection auto-discovers which GPUs are directly connected via NVLink and publishes the graph as node labels (`nvidia.com/gpu.links.X=Y`). No manual configuration needed.
+
+**TPU:** GKE auto-detects TPU pod topology from the physical interconnect at node pool creation time.
+
+**Ours:** `physical-pod`, `host-rank`, and `pod-size` are manually configured in the `tt-node-topology` ConfigMap by the operator at installation time. This matches the current design intent ("split is predefined at installation/configuration time"), but it means:
+- Adding a new T3K server requires a manual ConfigMap edit before it gets the right topology labels
+- Misconfiguration (wrong rank, wrong pod-size) silently mislabels the node
+
+**Potential fix:** Use the Tenstorrent Ethernet link layer to run neighbor discovery (similar to LLDP) across Galaxy mesh links. The labeler could:
+1. Query which remote chips this server sees over Tenstorrent Ethernet
+2. Build a connectivity graph across all servers
+3. Auto-assign `physical-pod` groups, `host-rank` positions, and `pod-size` counts from the graph
+
+This requires tt-metal APIs or low-level mesh access and is non-trivial. Manual ConfigMap is the correct short-term approach.
 
 ---
 
@@ -179,4 +199,5 @@
 | **P2** | Topology-aware scheduling | High | Multi-node performance correctness |
 | **P2** | Multi-node network integration | High | Galaxy / multi-T3K workloads |
 | **P3** | Automatic driver installation | High | Simplifies node onboarding |
+| **P3** | Automatic topology discovery | High | Auto-assign physical-pod/host-rank/pod-size via Galaxy Ethernet neighbor detection; requires tt-metal mesh APIs |
 | **P3** | Multi-device sharing | High | Not a current use case |

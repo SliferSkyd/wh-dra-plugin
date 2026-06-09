@@ -4,7 +4,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /wh-dra-kubelet-plugin ./cmd/wh-dra-kubelet-plugin
+RUN CGO_ENABLED=0 GOOS=linux go build -o /wh-dra-kubelet-plugin ./cmd/wh-dra-kubelet-plugin && \
+    CGO_ENABLED=0 GOOS=linux go build -o /wh-node-labeler ./cmd/wh-node-labeler
 
 # Stage 2: runtime with tt-smi baked in (no host mounts needed)
 FROM ubuntu:22.04
@@ -20,5 +21,6 @@ RUN pip3 install --no-cache-dir tomli && \
     rm -rf /tmp/tt-smi/
 
 COPY --from=builder /wh-dra-kubelet-plugin /usr/local/bin/wh-dra-kubelet-plugin
+COPY --from=builder /wh-node-labeler /usr/local/bin/wh-node-labeler
 
 ENTRYPOINT ["/usr/local/bin/wh-dra-kubelet-plugin"]

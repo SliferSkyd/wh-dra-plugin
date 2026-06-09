@@ -1,0 +1,90 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: wh-node-labeler
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: wh-node-labeler
+rules:
+- apiGroups: [""]
+  resources: [nodes]
+  verbs: [get, patch]
+- apiGroups: [""]
+  resources: [configmaps]
+  resourceNames: [tt-node-topology]
+  verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: wh-node-labeler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: wh-node-labeler
+subjects:
+- kind: ServiceAccount
+  name: wh-node-labeler
+  namespace: kube-system
+---
+# Edit this ConfigMap to add each T3K node's topology.
+# Keys: physical-pod (which Galaxy pod), host-rank (0-based rank within pod), pod-size (nodes per logical pod).
+# The labeler reads this at startup and every 5 minutes — no pod restart needed after edits.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tt-node-topology
+  namespace: kube-system
+data:
+  t3k-node-a: "physical-pod=t3k-a host-rank=0 pod-size=1"
+  t3k-node-b: "physical-pod=t3k-a host-rank=1 pod-size=1"
+---
+# Runs on every worker node. Sleeps on nodes without /dev/tenstorrent devices.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: wh-node-labeler
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: wh-node-labeler
+  template:
+    metadata:
+      labels:
+        app: wh-node-labeler
+    spec:
+      priorityClassName: system-node-critical
+      serviceAccountName: wh-node-labeler
+      tolerations:
+      - key: node.kubernetes.io/disk-pressure
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: labeler
+        image: wh-dra-kubelet-plugin:v0.1.0
+        imagePullPolicy: IfNotPresent
+        command: ["/usr/local/bin/wh-node-labeler"]
+        args:
+        - --node-name=$(NODE_NAME)
+        - --tt-smi-path=/usr/local/bin/tt-smi
+        - --interval=5m
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: dev-tenstorrent
+          mountPath: /dev/tenstorrent
+      volumes:
+      - name: dev-tenstorrent
+        hostPath:
+          path: /dev/tenstorrent
+          type: DirectoryOrCreate
