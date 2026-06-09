@@ -42,14 +42,20 @@ func (h *healthChecker) checkOnce(ctx context.Context) (bool, string) {
 	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	out, err := exec.CommandContext(runCtx, h.ttSmiPath, "-s").Output()
-	if err != nil {
-		return false, fmt.Sprintf("tt-smi failed: %v", err)
+	cmd := exec.CommandContext(runCtx, h.ttSmiPath, "-s")
+	out, runErr := cmd.Output()
+	// tt-smi sometimes exits non-zero (driver warnings) but still writes valid
+	// JSON to stdout. Try to parse whatever we got before declaring failure.
+	if runErr != nil && len(out) == 0 {
+		return false, fmt.Sprintf("tt-smi failed with no output: %v", runErr)
+	}
+	if runErr != nil {
+		klog.V(4).Infof("tt-smi exited non-zero (%v) but produced output — attempting parse", runErr)
 	}
 
 	var snap ttSMISnapshot
 	if err := json.Unmarshal(out, &snap); err != nil {
-		return false, fmt.Sprintf("parse tt-smi output: %v", err)
+		return false, fmt.Sprintf("parse tt-smi output (runErr=%v): %v", runErr, err)
 	}
 
 	for i := 0; i < h.chipCount; i++ {
