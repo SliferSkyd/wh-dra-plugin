@@ -25,7 +25,7 @@
 | **Fault / error code monitoring** | ✅ (XID errors) | ✅ | ❌ | We only check heartbeat stall |
 | **Firmware/driver version management** | ✅ | ✅ | ❌ | Upgrade tt-kmd across nodes |
 | **Pod preemption (priority eviction)** | ✅ | ✅ | ❌ | Evict low-priority pods to make room |
-| **Self-contained container image** | ✅ | ✅ | ❌ | We mount conda env from host |
+| **Self-contained container image** | ✅ | ✅ | ✅ | Plugin binary + tt-smi baked into `wh-dra-kubelet-plugin:v0.1.0` |
 | **Health diagnostic tests** | ✅ (DCGM diag) | ✅ | ❌ | Active chip-to-chip connectivity tests |
 
 ---
@@ -156,22 +156,13 @@
 
 ---
 
-### ❌ Self-contained container image
+### ✅ Self-contained container image — DONE (June 2026)
 
-**NVIDIA:** The GPU device plugin is a single static binary in a minimal container image (`nvcr.io/nvidia/k8s-device-plugin`). No host mounts needed for the plugin itself.
+`wh-dra-kubelet-plugin:v0.1.0` bakes both the plugin binary and `tt-smi` into the image. No host mounts for Python or the binary. Deployable to any T3K node without pre-installed conda.
 
-**TPU:** Same — single container image, no host filesystem dependencies.
+**Dockerfile:** multi-stage build — Go builder compiles the binary, Ubuntu 22.04 runtime installs tt-smi via pip from local source.
 
-**Ours:** The DaemonSet mounts three directories from the host:
-- `/home/ubuntu/miniconda3` — Python runtime for `tt-smi`
-- `/home/ubuntu/tt-smi` — `tt-smi` source (editable install)
-- `/home/ubuntu/.local` — `tt_tools_common` packages
-
-These are dev-machine paths. The image won't work on any other machine as-is.
-
-**Impact:** Cannot be deployed to a new node without first setting up the exact conda environment. Not usable in production.
-
-**Fix:** Build a container image that bundles a static `tt-smi` binary (or packages the Python deps at image build time). The plugin binary and `tt-smi` should both be self-contained in the image.
+**Remaining step:** push to a registry (Harbor / ACR) so nodes pull automatically instead of requiring manual `ctr import` per node.
 
 ---
 
@@ -179,7 +170,7 @@ These are dev-machine paths. The image won't work on any other machine as-is.
 
 | Priority | Gap | Effort | Impact |
 |---|---|---|---|
-| **P0** | Self-contained container image | Medium | Blocks any real deployment |
+| ~~**P0**~~ | ~~Self-contained container image~~ | ~~Medium~~ | ✅ Done — `wh-dra-kubelet-plugin:v0.1.0` |
 | **P0** | Automatic node labeling | Low | Cluster resets break deployments silently |
 | **P1** | Deep hardware telemetry | Medium | Ops visibility for production |
 | **P1** | Fault / error code monitoring | Medium | Silent failures in production |
