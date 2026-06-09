@@ -141,16 +141,25 @@ type ttSMIOutput struct {
 }
 
 func (l *labeler) discoverHardware() (boardType, arch string) {
-	out, err := exec.Command(l.ttSmiPath, "-s").Output()
-	if err != nil {
-		klog.Warningf("tt-smi failed: %v — using defaults", err)
+	cmd := exec.Command(l.ttSmiPath, "-s")
+	out, runErr := cmd.Output()
+	// tt-smi sometimes exits non-zero (warnings/driver quirks) but still writes
+	// valid JSON to stdout. Try to parse whatever we got before giving up.
+	if runErr != nil && len(out) == 0 {
+		klog.Warningf("tt-smi produced no output: %v — using defaults", runErr)
 		return "unknown", "wormhole"
+	}
+	if runErr != nil {
+		klog.V(4).Infof("tt-smi exited non-zero (%v) but produced output — attempting parse", runErr)
 	}
 	var snap ttSMIOutput
 	if err := json.Unmarshal(out, &snap); err != nil || len(snap.DeviceInfo) == 0 {
+		klog.Warningf("tt-smi JSON parse failed (runErr=%v parseErr=%v) — using defaults", runErr, err)
 		return "unknown", "wormhole"
 	}
-	raw := strings.ToLower(snap.DeviceInfo[0].BoardInfo.BoardType)
+	// board_type is e.g. "n300 L" or "n300 R" — take only the first word so the
+	// label value is a valid Kubernetes identifier (no spaces).
+	raw := strings.ToLower(strings.Fields(snap.DeviceInfo[0].BoardInfo.BoardType)[0])
 	boardType = strings.TrimPrefix(raw, "wormhole_")
 	if strings.HasPrefix(boardType, "p") {
 		arch = "blackhole"

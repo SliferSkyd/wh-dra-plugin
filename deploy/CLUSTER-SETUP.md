@@ -295,11 +295,7 @@ both binaries and `tt-smi` — no host mounts needed.
 
 ```bash
 cd /home/ubuntu/wh-dra-plugin
-docker buildx build \
-  --build-context tt-smi=/home/ubuntu/tt-smi \
-  -t wh-dra-kubelet-plugin:v0.1.0 \
-  --load \
-  .
+docker buildx build -t wh-dra-kubelet-plugin:v0.1.0 --load .
 ```
 
 **Import into containerd on each T3K node** (needs sudo — run on the node):
@@ -424,8 +420,7 @@ kubectl get resourceslices
 
 # Rebuild image and redeploy after code change
 cd /home/ubuntu/wh-dra-plugin
-docker buildx build --build-context tt-smi=/home/ubuntu/tt-smi \
-  -t wh-dra-kubelet-plugin:v0.1.0 --load .
+docker buildx build -t wh-dra-kubelet-plugin:v0.1.0 --load .
 # (on each T3K node) docker save wh-dra-kubelet-plugin:v0.1.0 | sudo ctr -n k8s.io images import -
 kubectl rollout restart daemonset/wh-dra-kubelet-plugin -n kube-system
 kubectl rollout restart daemonset/wh-node-labeler -n kube-system
