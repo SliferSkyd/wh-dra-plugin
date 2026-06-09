@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"k8s.io/klog/v2"
@@ -43,11 +44,13 @@ func (h *healthChecker) checkOnce(ctx context.Context) (bool, string) {
 	defer cancel()
 
 	cmd := exec.CommandContext(runCtx, h.ttSmiPath, "-s")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
 	out, runErr := cmd.Output()
 	// tt-smi sometimes exits non-zero (driver warnings) but still writes valid
 	// JSON to stdout. Try to parse whatever we got before declaring failure.
 	if runErr != nil && len(out) == 0 {
-		return false, fmt.Sprintf("tt-smi failed with no output: %v", runErr)
+		return false, fmt.Sprintf("tt-smi failed with no output: %v stderr=%q", runErr, stderr.String())
 	}
 	if runErr != nil {
 		klog.V(4).Infof("tt-smi exited non-zero (%v) but produced output — attempting parse", runErr)

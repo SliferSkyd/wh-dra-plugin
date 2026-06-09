@@ -10,7 +10,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /wh-dra-kubelet-plugin ./cmd/wh-dra-kub
 # Stage 2: runtime with tt-smi installed from PyPI
 FROM ubuntu:22.04
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends python3 python3-pip && \
+    apt-get install -y --no-install-recommends python3 python3-pip libatomic1 && \
     rm -rf /var/lib/apt/lists/*
 
 # Pin to the version running on the T3K nodes. Update this when upgrading tt-smi.
