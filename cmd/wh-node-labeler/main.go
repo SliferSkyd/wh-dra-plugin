@@ -141,7 +141,9 @@ type ttSMIOutput struct {
 }
 
 func (l *labeler) discoverHardware() (boardType, arch string) {
-	cmd := exec.Command(l.ttSmiPath, "-s")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, l.ttSmiPath, "-s")
 	out, runErr := cmd.Output()
 	// tt-smi sometimes exits non-zero (warnings/driver quirks) but still writes
 	// valid JSON to stdout. Try to parse whatever we got before giving up.

@@ -46,6 +46,8 @@ spec:
           mountPath: /dev/tenstorrent
         - name: checkpoint-dir
           mountPath: /var/lib/wh-dra/checkpoint
+        - name: tt-logs-dir
+          mountPath: /tmp/tt_logs
       volumes:
       - name: plugin-dir
         hostPath:
@@ -66,4 +68,8 @@ spec:
       - name: checkpoint-dir
         hostPath:
           path: /var/lib/wh-dra/checkpoint
+          type: DirectoryOrCreate
+      - name: tt-logs-dir
+        hostPath:
+          path: /tmp/tt_logs
           type: DirectoryOrCreate
