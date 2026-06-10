@@ -304,10 +304,16 @@ curl -s localhost:9090/metrics | grep -v '^#'
 ## Daily command reference
 
 ```bash
-# --- Build & deploy (image is built by GitHub Actions on push to main) ---
-# After push, restart the DaemonSet to pull the new image:
-kubectl rollout restart daemonset/wh-dra-kubelet-plugin -n kube-system
-kubectl rollout restart daemonset/wh-node-labeler -n kube-system
+# --- Build & deploy (fully automatic on every push to main) ---
+git push origin main
+# Pipeline: build job (~2-3 min) → deploy job → rolling update on T3K nodes
+
+# Verify the new image is running:
+kubectl get pods -n kube-system -l app=wh-dra-kubelet-plugin \
+  -o jsonpath='{range .items[*]}{.spec.containers[0].image}{"\n"}{end}'
+
+# Monitor rollout:
+kubectl rollout status daemonset/wh-dra-kubelet-plugin -n kube-system
 
 # --- Status ---
 kubectl -n kube-system get pod -l app=wh-dra-kubelet-plugin

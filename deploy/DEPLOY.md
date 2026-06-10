@@ -4,6 +4,62 @@ What each YAML file does and when to apply it.
 
 ---
 
+## CI/CD — automatic build and deploy
+
+Every `git push` to `main` triggers the full pipeline automatically:
+
+```
+git push origin main
+     ↓  GitHub Actions build job (~2-3 min)
+     docker build → push to ghcr.io/slifersky/wh-dra-plugin:sha-XXXXXXX + :latest
+     ↓  GitHub Actions deploy job (runs on self-hosted runner on control-plane-01)
+     helm upgrade → updates DaemonSet image tag to sha-XXXXXXX
+     ↓  Kubernetes rolling update (~1-2 min)
+     kubelet pulls new image on t3k-node-a and t3k-node-b
+     plugin pods restart with new code
+```
+
+**What gets updated on every push:**
+- `wh-dra-kubelet-plugin` DaemonSet on all T3K nodes
+- `wh-node-labeler` DaemonSet on all T3K nodes
+- Any Helm chart changes (RBAC, DeviceClass, topology ConfigMap)
+
+**What is NOT touched:**
+- Workload pods already running — they continue until they exit naturally
+- Cluster infrastructure (Kubernetes, containerd, kernel driver)
+
+**Verify a deploy landed:**
+```bash
+kubectl get pods -n kube-system -l app=wh-dra-kubelet-plugin \
+  -o jsonpath='{range .items[*]}{.spec.containers[0].image}{"\n"}{end}'
+# should show: ghcr.io/slifersky/wh-dra-plugin:sha-XXXXXXX
+# where XXXXXXX = first 7 chars of your latest git commit
+```
+
+**Self-hosted runner** (required for deploy job to reach the private cluster):
+- Installed on `control-plane-01` at `~/actions-runner/`
+- Runs as a systemd service: `sudo systemctl status actions.runner.*`
+- If the runner goes offline, the build job still succeeds (image is pushed to ghcr.io)
+  but the deploy step will be queued until the runner comes back online
+
+**Full Helm reference** (values, rollback, manual install): `helm/wh-dra-plugin/README.md`
+
+**Re-run a failed deploy without a code change:**
+```bash
+# Option 1: empty commit to re-trigger the pipeline
+git commit --allow-empty -m "ci: retrigger deploy"
+git push origin main
+
+# Option 2: manual helm upgrade on the control plane
+SHA=$(git rev-parse --short HEAD)
+helm upgrade wh-dra-plugin ./helm/wh-dra-plugin \
+  --namespace kube-system \
+  --set image.repository=ghcr.io/slifersky/wh-dra-plugin \
+  --set image.tag=sha-${SHA}
+```
+
+---
+
 ## Dependency order (apply from scratch)
 
 ```

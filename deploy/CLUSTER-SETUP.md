@@ -410,11 +410,12 @@ kubectl get node t3k-node-a --show-labels | tr ',' '\n' | grep -E 'tenstorrent|m
 # Device availability
 kubectl get resourceslices
 
-# Redeploy after a code change:
-# 1. git push origin main  →  GitHub Actions builds + pushes to ghcr.io
-# 2. Then trigger a rolling restart to pull the new image:
-kubectl rollout restart daemonset/wh-dra-kubelet-plugin -n kube-system
-kubectl rollout restart daemonset/wh-node-labeler -n kube-system
+# Redeploy after a code change — fully automatic:
+# Just push to main; GitHub Actions builds + pushes image + runs helm upgrade
+git push origin main
+# Monitor the rollout:
+kubectl rollout status daemonset/wh-dra-kubelet-plugin -n kube-system
+kubectl rollout status daemonset/wh-node-labeler -n kube-system
 
 # Plugin metrics
 kubectl -n kube-system port-forward \
