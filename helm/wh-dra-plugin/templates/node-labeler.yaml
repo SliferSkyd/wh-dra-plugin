@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tt-node-topology
+  namespace: kube-system
+  labels:
+    {{- include "wh-dra-plugin.labels" . | nindent 4 }}
+data:
+  {{- range $node, $value := .Values.topology }}
+  {{ $node }}: {{ $value | quote }}
+  {{- end }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: wh-node-labeler
+  namespace: kube-system
+  labels:
+    {{- include "wh-dra-plugin.labels" . | nindent 4 }}
+    app: wh-node-labeler
+spec:
+  selector:
+    matchLabels:
+      app: wh-node-labeler
+  template:
+    metadata:
+      labels:
+        app: wh-node-labeler
+    spec:
+      priorityClassName: system-node-critical
+      serviceAccountName: wh-dra-plugin
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: wh-node-labeler
+        image: {{ include "wh-dra-plugin.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["/usr/local/bin/wh-node-labeler"]
+        args:
+        - --node-name=$(NODE_NAME)
+        - --tt-smi-path={{ .Values.nodeLabeler.ttSmiPath }}
+        - --interval={{ .Values.nodeLabeler.interval }}
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        volumeMounts:
+        - name: dev-tenstorrent
+          mountPath: /dev/tenstorrent
+      volumes:
+      - name: dev-tenstorrent
+        hostPath:
+          path: /dev/tenstorrent
+          type: Directory

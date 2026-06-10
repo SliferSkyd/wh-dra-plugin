@@ -66,8 +66,8 @@ spec:
         effect: NoSchedule
       containers:
       - name: labeler
-        image: wh-dra-kubelet-plugin:v0.1.0
-        imagePullPolicy: IfNotPresent
+        image: ghcr.io/SliferSkyd/wh-dra-plugin:latest
+        imagePullPolicy: Always
         command: ["/usr/local/bin/wh-node-labeler"]
         args:
         - --node-name=$(NODE_NAME)

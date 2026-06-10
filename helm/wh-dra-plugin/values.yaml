@@ -1,0 +1,34 @@
+# Image built and pushed by GitHub Actions to ghcr.io.
+# Override image.repository with your GitHub org/repo, e.g.:
+#   ghcr.io/tenstorrent/wh-dra-plugin
+image:
+  repository: ghcr.io/SliferSkyd/wh-dra-plugin
+  tag: latest
+  pullPolicy: Always
+
+# Set to [{name: ghcr-credentials}] for private ghcr.io packages.
+# See deploy/DEPLOY.md for how to create the secret.
+imagePullSecrets: []
+
+plugin:
+  healthCheckInterval: 30s
+  ttSmiPath: /usr/local/bin/tt-smi
+  metricsPort: 9090
+  cdiDir: /var/run/cdi
+  checkpointDir: /var/lib/wh-dra/checkpoint
+  pluginDir: /var/lib/kubelet/plugins/wormhole.tenstorrent.com
+  registrarDir: /var/lib/kubelet/plugins_registry
+
+nodeLabeler:
+  interval: 5m
+  ttSmiPath: /usr/local/bin/tt-smi
+
+# DaemonSet runs only on nodes with this label.
+nodeSelector:
+  tenstorrent.com/arch: wormhole
+
+# Topology ConfigMap — populated once per cluster by the admin.
+# Maps node name → "physical-pod=<name> host-rank=<n> pod-size=<n>"
+topology:
+  t3k-node-a: "physical-pod=t3k-a host-rank=0 pod-size=2"
+  t3k-node-b: "physical-pod=t3k-a host-rank=1 pod-size=2"

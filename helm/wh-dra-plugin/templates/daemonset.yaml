@@ -3,6 +3,9 @@ kind: DaemonSet
 metadata:
   name: wh-dra-kubelet-plugin
   namespace: kube-system
+  labels:
+    {{- include "wh-dra-plugin.labels" . | nindent 4 }}
+    app: wh-dra-kubelet-plugin
 spec:
   selector:
     matchLabels:
@@ -14,20 +17,24 @@ spec:
     spec:
       priorityClassName: system-node-critical
       nodeSelector:
-        tenstorrent.com/arch: wormhole
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
       serviceAccountName: wh-dra-plugin
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: wh-dra-kubelet-plugin
-        image: ghcr.io/SliferSkyd/wh-dra-plugin:latest
-        imagePullPolicy: Always
+        image: {{ include "wh-dra-plugin.image" . }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
         command: ["/usr/local/bin/wh-dra-kubelet-plugin"]
         args:
         - --node-name=$(NODE_NAME)
-        - --cdi-dir=/var/run/cdi
-        - --checkpoint-dir=/var/lib/wh-dra/checkpoint
-        - --metrics-port=9090
-        - --tt-smi-path=/usr/local/bin/tt-smi
-        - --health-check-interval=30s
+        - --cdi-dir={{ .Values.plugin.cdiDir }}
+        - --checkpoint-dir={{ .Values.plugin.checkpointDir }}
+        - --metrics-port={{ .Values.plugin.metricsPort }}
+        - --tt-smi-path={{ .Values.plugin.ttSmiPath }}
+        - --health-check-interval={{ .Values.plugin.healthCheckInterval }}
         env:
         - name: NODE_NAME
           valueFrom:
@@ -37,29 +44,29 @@ spec:
           privileged: true
         volumeMounts:
         - name: plugin-dir
-          mountPath: /var/lib/kubelet/plugins/wormhole.tenstorrent.com
+          mountPath: {{ .Values.plugin.pluginDir }}
         - name: registrar-dir
-          mountPath: /var/lib/kubelet/plugins_registry
+          mountPath: {{ .Values.plugin.registrarDir }}
         - name: cdi-dir
-          mountPath: /var/run/cdi
+          mountPath: {{ .Values.plugin.cdiDir }}
         - name: dev-tenstorrent
           mountPath: /dev/tenstorrent
         - name: checkpoint-dir
-          mountPath: /var/lib/wh-dra/checkpoint
+          mountPath: {{ .Values.plugin.checkpointDir }}
         - name: tt-logs-dir
           mountPath: /tmp/tt_logs
       volumes:
       - name: plugin-dir
         hostPath:
-          path: /var/lib/kubelet/plugins/wormhole.tenstorrent.com
+          path: {{ .Values.plugin.pluginDir }}
           type: DirectoryOrCreate
       - name: registrar-dir
         hostPath:
-          path: /var/lib/kubelet/plugins_registry
+          path: {{ .Values.plugin.registrarDir }}
           type: Directory
       - name: cdi-dir
         hostPath:
-          path: /var/run/cdi
+          path: {{ .Values.plugin.cdiDir }}
           type: DirectoryOrCreate
       - name: dev-tenstorrent
         hostPath:
@@ -67,7 +74,7 @@ spec:
           type: Directory
       - name: checkpoint-dir
         hostPath:
-          path: /var/lib/wh-dra/checkpoint
+          path: {{ .Values.plugin.checkpointDir }}
           type: DirectoryOrCreate
       - name: tt-logs-dir
         hostPath:

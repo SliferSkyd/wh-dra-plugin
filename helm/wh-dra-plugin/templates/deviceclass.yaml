@@ -1,0 +1,10 @@
+apiVersion: resource.k8s.io/v1
+kind: DeviceClass
+metadata:
+  name: t3k.wormhole.tenstorrent.com
+  labels:
+    {{- include "wh-dra-plugin.labels" . | nindent 4 }}
+spec:
+  selectors:
+  - cel:
+      expression: device.driver == "wormhole.tenstorrent.com"

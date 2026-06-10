@@ -1,0 +1,6 @@
+apiVersion: v2
+name: wh-dra-plugin
+description: Kubernetes DRA plugin for Tenstorrent Wormhole T3K hardware
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
