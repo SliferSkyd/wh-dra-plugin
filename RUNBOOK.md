@@ -14,7 +14,7 @@ It runs as a DaemonSet on every T3K node and does three things:
 |---|---|
 | **Device scheduling** | Publishes a `ResourceSlice` so the scheduler can allocate T3K devices to pods |
 | **Device injection** | On pod start, writes a CDI spec that injects `/dev/tenstorrent/*`, env vars, and `/dev/hugepages-1G` into the container — no `privileged: true` needed |
-| **Health monitoring** | Polls `tt-smi -s` every 30 s; if any chip's heartbeat stalls the `ResourceSlice` is emptied so the scheduler stops placing new workloads on this node |
+| **Health monitoring** | Calls `os.Open(/dev/tenstorrent/N)` every 30 s; if any chip is inaccessible the `ResourceSlice` is emptied so the scheduler stops placing new workloads on this node |
 
 ```
 Node (Wormhole T3K host)
@@ -38,7 +38,7 @@ Node (Wormhole T3K host)
 cmd/wh-dra-kubelet-plugin/
   main.go       flags, signal handling, metrics server
   driver.go     ResourceSlice publication, health-triggered republication
-  health.go     periodic tt-smi heartbeat checker
+  health.go     periodic os.Open device health checker
   cdi.go        writes CDI YAML spec files to /var/run/cdi/
   state.go      PrepareResourceClaims / UnprepareResourceClaims
   manager.go    reads node labels, walks /dev/tenstorrent/
@@ -63,7 +63,7 @@ deploy/
 | 1 GiB hugepages allocated | `cat /sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages` (> 0) |
 | `/dev/hugepages-1G` exists | `ls /dev/hugepages-1G` |
 | containerd CDI enabled | `grep enable_cdi /etc/containerd/config.toml` → `true` |
-| `/tmp/tt_logs` exists on host | `mkdir -p /tmp/tt_logs` |
+| `/tmp/tt_logs` exists on host | Created automatically by DaemonSet (`hostPath: DirectoryOrCreate`) |
 | Go ≥ 1.21 (build only) | `go version` |
 
 ---
@@ -98,16 +98,25 @@ bash deploy/odin/node-labels.sh <node-name>
 
 ---
 
-## Step 2 — Build the plugin binary
+## Step 2 — Build the plugin image
+
+The plugin image is built and pushed automatically by GitHub Actions on every push to `main`:
+
+```
+git push origin main
+  → GitHub Actions builds docker image
+  → pushes to ghcr.io/SliferSkyd/wh-dra-plugin:latest (+ :sha-XXXXXXX)
+  → kubectl rollout restart picks up the new image on each T3K node
+```
+
+No manual `docker build` or `ctr images import` is needed on T3K nodes — they pull from ghcr.io directly via `imagePullPolicy: Always`.
+
+For local development only:
 
 ```bash
 cd /home/ubuntu/wh-dra-plugin
-
 export PATH=$PATH:/home/ubuntu/go/bin
-export GOPATH=/home/ubuntu/gopath
-
 go build -o bin/wh-dra-kubelet-plugin ./cmd/wh-dra-kubelet-plugin
-# → bin/wh-dra-kubelet-plugin
 ```
 
 ---
@@ -154,7 +163,7 @@ Expected startup lines:
 ```
 node tt-mv-n2-vm4: arch=wormhole board=n300 chips=4 pod=t3k-a rank=0
 published ResourceSlice: device wormhole-t3k with 4 chips on pool tt-mv-n2-vm4
-health monitoring started (interval=30s tt-smi=... chips=4)
+health monitoring started (interval=30s chips=4)
 wh-dra-kubelet-plugin running on node tt-mv-n2-vm4
 metrics on :9090/metrics
 ```
@@ -246,20 +255,20 @@ kubectl -n kube-system logs -l app=wh-dra-kubelet-plugin | grep -i health
 Normal (no flip — at default verbosity only status changes are logged):
 
 ```
-health monitoring started (interval=30s tt-smi=... chips=4)
+health monitoring started (interval=30s chips=4)
 ```
 
 On failure:
 
 ```
-T3K health changed: healthy=false — chip 2: heartbeat stalled (prev=41234 cur=41234)
+T3K health changed: healthy=false — chip 2 not accessible (/dev/tenstorrent/2): permission denied
 published empty ResourceSlice on pool tt-mv-n2-vm4 (T3K unhealthy)
 ```
 
 On recovery:
 
 ```
-T3K health changed: healthy=true — all 4 chips healthy
+T3K health changed: healthy=true — all 4 chips accessible
 published ResourceSlice: device wormhole-t3k with 4 chips on pool tt-mv-n2-vm4
 ```
 
@@ -295,9 +304,10 @@ curl -s localhost:9090/metrics | grep -v '^#'
 ## Daily command reference
 
 ```bash
-# --- Build & deploy ---
-go build -o bin/wh-dra-kubelet-plugin ./cmd/wh-dra-kubelet-plugin
+# --- Build & deploy (image is built by GitHub Actions on push to main) ---
+# After push, restart the DaemonSet to pull the new image:
 kubectl rollout restart daemonset/wh-dra-kubelet-plugin -n kube-system
+kubectl rollout restart daemonset/wh-node-labeler -n kube-system
 
 # --- Status ---
 kubectl -n kube-system get pod -l app=wh-dra-kubelet-plugin
@@ -318,8 +328,9 @@ kubectl -n kube-system port-forward \
   9090:9090
 curl -s localhost:9090/metrics
 
-# --- Board reset (if firmware is stuck) ---
-/home/ubuntu/miniconda3/envs/moreh/bin/tt-smi -r all
+# --- Driver reload (if chips become inaccessible) ---
+# Run on the affected T3K node:
+sudo modprobe -r tenstorrent && sudo modprobe tenstorrent
 ```
 
 ---
@@ -394,16 +405,6 @@ sudo chmod 644 /etc/rancher/k3s/k3s.yaml
 
 Prevention: use `ResourceClaimTemplate` inside a `Job` — each pod gets a unique auto-named claim so the same name is never reused.
 
-### Plugin logs `tt-smi: no such file or directory`
-
-`tt-smi` is a Python script (not a native binary). The DaemonSet must mount the conda environment and source directories from the host. Verify the three mounts exist in `deploy/daemonset.yaml`:
-
-```
-miniconda   → /home/ubuntu/miniconda3
-tt-smi-src  → /home/ubuntu/tt-smi
-local-pylib → /home/ubuntu/.local
-```
-
 ### ResourceSlice is empty / scheduler not placing pods
 
 ```bash
@@ -416,10 +417,11 @@ If `Slices` is empty, the health check failed. Check logs:
 kubectl -n kube-system logs -l app=wh-dra-kubelet-plugin | grep -i health
 ```
 
-If the hardware is actually healthy, reset the board and wait for the next health tick:
+The health goroutine checks `os.Open("/dev/tenstorrent/N")` — if the device files are not accessible, the slice stays empty. Reload the kernel driver to recover:
 
 ```bash
-/home/ubuntu/miniconda3/envs/moreh/bin/tt-smi -r all
+# On the affected T3K node:
+sudo modprobe -r tenstorrent && sudo modprobe tenstorrent
 # health goroutine recovers automatically within --health-check-interval (default 30s)
 ```
 

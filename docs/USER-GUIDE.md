@@ -131,9 +131,9 @@ What gets injected automatically (no config needed in the pod spec):
 TT_CHIP_COUNT=4
 TT_MESH_HOST_RANK=0     ← 0 for node-a, 1 for node-b
 TT_PHYSICAL_POD=t3k-a
-TT_POD_SIZE=1
+TT_POD_SIZE=2           ← number of T3K nodes in the connected mesh
 /dev/hugepages-1G       ← required by Tenstorrent runtime
-/tmp/tt_logs            ← firmware log directory
+/tmp/tt_logs            ← firmware log directory (created on host by DaemonSet)
 ```
 
 ---
@@ -279,4 +279,4 @@ kubectl get pods -w
 | **2 T3K nodes available** | t3k-node-a (192.168.1.247) and t3k-node-b (192.168.1.243) |
 | **4 chips per node** | `/dev/tenstorrent/0-3` on each node |
 | **`kubectl logs` may time out** | Known network issue — use `crictl logs` on the node directly as workaround |
-| **No registry yet** | Custom images must be imported manually via `ctr import` — ask the admin |
+| **Custom images need manual import** | Images not on ghcr.io must be imported on each node: `docker save <img> \| sudo ctr -n k8s.io images import -` — ask the admin |

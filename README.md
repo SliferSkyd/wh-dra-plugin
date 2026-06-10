@@ -50,6 +50,10 @@ kubectl label node <node-name> \
 
 ## Step 2 — Build
 
+The plugin is automatically built and pushed to `ghcr.io/SliferSkyd/wh-dra-plugin:latest` by GitHub Actions on every push to `main`. No manual build or image import is needed — nodes pull the image directly.
+
+For local development only:
+
 ```bash
 export PATH=$PATH:/home/ubuntu/go/bin
 export GOPATH=/home/ubuntu/gopath
@@ -85,12 +89,13 @@ Expected: one ResourceSlice named `<node>-wormhole.tenstorrent.com-<suffix>` con
 
 ## Step 4 — Deploy as DaemonSet
 
-The DaemonSet uses `ubuntu:22.04` (already present in k3s containerd) and mounts the pre-built binary from the host. No custom image import required.
+The DaemonSet pulls `ghcr.io/SliferSkyd/wh-dra-plugin:latest` automatically from ghcr.io — no manual image import required on each node.
 
 ```bash
-# Apply RBAC, DeviceClass, and DaemonSet
+# Apply RBAC, DeviceClass, node labeler, and DaemonSet
 kubectl apply -f deploy/rbac.yaml
 kubectl apply -f deploy/deviceclass.yaml
+kubectl apply -f deploy/node-labeler.yaml
 kubectl apply -f deploy/daemonset.yaml
 
 # Check
@@ -181,7 +186,7 @@ cmd/wh-dra-kubelet-plugin/
   manager.go     # Reads node labels, walks /dev/tenstorrent/, stats each device node (type/major/minor)
   state.go       # PrepareResourceClaims / UnprepareResourceClaims
   cdi.go         # Writes CDI YAML spec files to /var/run/cdi/
-  health.go      # Periodic tt-smi health checker (heartbeat monitoring)
+  health.go      # Periodic os.Open health checker (checks /dev/tenstorrent/N)
   checkpoint.go  # Crash recovery: checkpoint.json with boot ID validation
 pkg/
   flock/         # Cross-process file lock (safe during rolling DaemonSet updates)
@@ -258,7 +263,7 @@ Each auto-created claim is owned by its pod (ownerReference). When the pod is de
 3. **PrepareResourceClaims**: kubelet calls the plugin before starting the container. Plugin writes a per-claim CDI spec file (`/var/run/cdi/k8s.wormhole.tenstorrent.com-t3k-<claimUID>.yaml`) listing the `/dev/tenstorrent/*` device nodes. State is checkpointed to survive plugin restarts.
 4. **Container start**: containerd reads CDI spec files, injects the device nodes, `/dev/hugepages-1G`, and env vars into the container. Device allowlist is updated via `type/major/minor/permissions` — equivalent to `docker run --device`. No `privileged: true` needed in the pod spec.
 5. **UnprepareResourceClaims**: kubelet calls after the pod exits. Plugin deletes the per-claim CDI file and removes the claim from the checkpoint.
-6. **Health monitoring** (if `--tt-smi-path` is set): a background goroutine runs `tt-smi -s` every `--health-check-interval` (default 30 s). If any chip's heartbeat stops increasing, the plugin republishes the ResourceSlice with an empty device list so the scheduler stops placing new workloads on this node. The slice is restored to normal once the heartbeat resumes.
+6. **Health monitoring**: a background goroutine calls `os.Open("/dev/tenstorrent/N")` for every chip every `--health-check-interval` (default 30 s). If any chip is inaccessible, the plugin republishes the ResourceSlice with an empty device list so the scheduler stops placing new workloads on this node. The slice is restored to normal once all chips are accessible again. This approach avoids spawning `tt-smi` (a Python process that can hang when the Ethernet mesh is in an inconsistent state).
 
 ## CDI spec files
 
@@ -308,9 +313,9 @@ The taint clears automatically once the kubelet sees disk above its eviction thr
 
 **`failed to initialize FW! Try resetting the board`**
 
-Another process left the chip in a bad state. Reset all boards:
+Another process left the chip in a bad state. Reload the kernel driver on the affected T3K node:
 ```bash
-/home/ubuntu/miniconda3/envs/moreh/bin/tt-smi -r all
+sudo modprobe -r tenstorrent && sudo modprobe tenstorrent
 ```
 
 ## Multi-node T3K

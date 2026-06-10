@@ -132,7 +132,8 @@ Key details:
 | `nodeSelector` | `tenstorrent.com/arch=wormhole` | Only runs on labeled T3K nodes (set by wh-node-labeler) |
 | `priorityClassName` | `system-node-critical` | Starts before workload pods |
 | `securityContext.privileged` | `true` | Needed to write CDI specs and access `/dev/tenstorrent` |
-| `image` | `wh-dra-kubelet-plugin:v0.1.0` | Self-contained — includes plugin binary + tt-smi |
+| `image` | `ghcr.io/SliferSkyd/wh-dra-plugin:latest` | Built by GitHub Actions on every push to main |
+| `imagePullPolicy` | `Always` | Ensures latest image is pulled on each pod restart |
 
 Volume mounts:
 
@@ -143,8 +144,7 @@ Volume mounts:
 | `cdi-dir` | `/var/run/cdi` | same | CDI spec files |
 | `dev-tenstorrent` | `/dev/tenstorrent` | same | Hardware device nodes |
 | `checkpoint-dir` | `/var/lib/wh-dra/checkpoint` | same | Crash-recovery state |
-
-No host mounts for Python, conda, or binaries — all baked into the image.
+| `tt-logs-dir` | `/tmp/tt_logs` | `/tmp/tt_logs` | Firmware log directory (DirectoryOrCreate — kubelet creates on host) |
 
 ```bash
 kubectl apply -f deploy/daemonset.yaml
@@ -235,6 +235,23 @@ kubectl get pods -w   # watch pod-a run, pod-b pending
 kubectl delete pod wh-excl-pod-a && kubectl delete resourceclaim wh-excl-claim-a
 kubectl logs wh-excl-pod-b
 kubectl delete -f deploy/test-two-pods.yaml
+```
+
+---
+
+### `multinode/test-job-scheduler.yaml`
+
+**Purpose**: Scheduler stress test — verifies the scheduler distributes work across all available T3K nodes.
+
+Creates a `ResourceClaimTemplate` + `Job` with `completions=10, parallelism=2`. Ten 10-second tasks run two at a time; the scheduler fills both nodes in parallel.
+
+**Verified result (2 nodes):** 5 completions on t3k-node-a, 5 completions on t3k-node-b, ~50 s total.
+
+```bash
+kubectl apply -f deploy/multinode/test-job-scheduler.yaml
+kubectl get pods -o wide -w       # watch pods distribute across nodes
+kubectl get pods -o wide          # after completion: 5 per node
+kubectl delete -f deploy/multinode/test-job-scheduler.yaml
 ```
 
 ---

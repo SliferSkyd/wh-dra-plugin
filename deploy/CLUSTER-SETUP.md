@@ -286,31 +286,28 @@ If you leave a node out of the ConfigMap, the labeler uses safe defaults (`physi
 
 ---
 
-## Step 5 — Build and import the container image (on each T3K node)
+## Step 5 — Container image (pulled automatically from ghcr.io)
 
-The plugin and node labeler run from a self-contained Docker image that includes
-both binaries and `tt-smi` — no host mounts needed.
+The plugin image is built and pushed by GitHub Actions on every push to `main`:
 
-**Build on the control plane** (or any machine with Docker and the repo):
-
-```bash
-cd /home/ubuntu/wh-dra-plugin
-docker build -t wh-dra-kubelet-plugin:v0.1.0 .
+```
+ghcr.io/SliferSkyd/wh-dra-plugin:latest
+ghcr.io/SliferSkyd/wh-dra-plugin:sha-<commit>
 ```
 
-**Import into containerd on each T3K node** (needs sudo — run on the node):
+Both DaemonSets use `imagePullPolicy: Always`, so nodes pull the latest image automatically when the pod restarts. No manual `docker build` or `ctr images import` is needed.
+
+**If ghcr.io is private** — create an image pull secret on each node once:
 
 ```bash
-docker save wh-dra-kubelet-plugin:v0.1.0 | sudo ctr -n k8s.io images import -
+kubectl create secret docker-registry ghcr-credentials \
+  --docker-server=ghcr.io \
+  --docker-username=<github-username> \
+  --docker-password=<github-PAT-with-read:packages> \
+  -n kube-system
 ```
 
-Verify:
-```bash
-sudo ctr -n k8s.io images ls | grep wh-dra
-```
-
-> **Note:** In the future this step will be replaced by pushing to a registry (Harbor/ACR)
-> so nodes pull automatically.
+Then set `imagePullSecrets: [{name: ghcr-credentials}]` in `helm/wh-dra-plugin/values.yaml`.
 
 ---
 
@@ -391,11 +388,6 @@ For each new node:
    kubectl edit configmap tt-node-topology -n kube-system
    # Add: t3k-node-b: "physical-pod=t3k-a host-rank=1 pod-size=1"
    ```
-7. Import the plugin image on the new node:
-   ```bash
-   docker save wh-dra-kubelet-plugin:v0.1.0 | sudo ctr -n k8s.io images import -
-   ```
-
 The node labeler DaemonSet detects the new node's hardware and applies labels automatically.
 The plugin DaemonSet then starts on the newly labeled node within seconds — no manifest changes needed.
 
@@ -418,10 +410,9 @@ kubectl get node t3k-node-a --show-labels | tr ',' '\n' | grep -E 'tenstorrent|m
 # Device availability
 kubectl get resourceslices
 
-# Rebuild image and redeploy after code change
-cd /home/ubuntu/wh-dra-plugin
-docker build -t wh-dra-kubelet-plugin:v0.1.0 .
-# (on each T3K node) docker save wh-dra-kubelet-plugin:v0.1.0 | sudo ctr -n k8s.io images import -
+# Redeploy after a code change:
+# 1. git push origin main  →  GitHub Actions builds + pushes to ghcr.io
+# 2. Then trigger a rolling restart to pull the new image:
 kubectl rollout restart daemonset/wh-dra-kubelet-plugin -n kube-system
 kubectl rollout restart daemonset/wh-node-labeler -n kube-system
 
@@ -431,8 +422,8 @@ kubectl -n kube-system port-forward \
   9090:9090
 curl -s localhost:9090/metrics
 
-# Board reset (if firmware stuck — run on the T3K node)
-tt-smi -r all
+# Driver reload (if chips become inaccessible — run on the T3K node)
+sudo modprobe -r tenstorrent && sudo modprobe tenstorrent
 ```
 
 ---
