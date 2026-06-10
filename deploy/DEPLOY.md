@@ -132,7 +132,7 @@ Key details:
 | `nodeSelector` | `tenstorrent.com/arch=wormhole` | Only runs on labeled T3K nodes (set by wh-node-labeler) |
 | `priorityClassName` | `system-node-critical` | Starts before workload pods |
 | `securityContext.privileged` | `true` | Needed to write CDI specs and access `/dev/tenstorrent` |
-| `image` | `ghcr.io/SliferSkyd/wh-dra-plugin:latest` | Built by GitHub Actions on every push to main |
+| `image` | `ghcr.io/slifersky/wh-dra-plugin:latest` | Built by GitHub Actions on every push to main |
 | `imagePullPolicy` | `Always` | Ensures latest image is pulled on each pod restart |
 
 Volume mounts:

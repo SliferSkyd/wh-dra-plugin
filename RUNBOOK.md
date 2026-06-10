@@ -105,7 +105,7 @@ The plugin image is built and pushed automatically by GitHub Actions on every pu
 ```
 git push origin main
   → GitHub Actions builds docker image
-  → pushes to ghcr.io/SliferSkyd/wh-dra-plugin:latest (+ :sha-XXXXXXX)
+  → pushes to ghcr.io/slifersky/wh-dra-plugin:latest (+ :sha-XXXXXXX)
   → kubectl rollout restart picks up the new image on each T3K node
 ```
 

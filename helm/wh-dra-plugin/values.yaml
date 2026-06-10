@@ -2,7 +2,7 @@
 # Override image.repository with your GitHub org/repo, e.g.:
 #   ghcr.io/tenstorrent/wh-dra-plugin
 image:
-  repository: ghcr.io/SliferSkyd/wh-dra-plugin
+  repository: ghcr.io/slifersky/wh-dra-plugin
   tag: latest
   pullPolicy: Always
 

@@ -50,7 +50,7 @@ kubectl label node <node-name> \
 
 ## Step 2 — Build
 
-The plugin is automatically built and pushed to `ghcr.io/SliferSkyd/wh-dra-plugin:latest` by GitHub Actions on every push to `main`. No manual build or image import is needed — nodes pull the image directly.
+The plugin is automatically built and pushed to `ghcr.io/slifersky/wh-dra-plugin:latest` by GitHub Actions on every push to `main`. No manual build or image import is needed — nodes pull the image directly.
 
 For local development only:
 
@@ -89,7 +89,7 @@ Expected: one ResourceSlice named `<node>-wormhole.tenstorrent.com-<suffix>` con
 
 ## Step 4 — Deploy as DaemonSet
 
-The DaemonSet pulls `ghcr.io/SliferSkyd/wh-dra-plugin:latest` automatically from ghcr.io — no manual image import required on each node.
+The DaemonSet pulls `ghcr.io/slifersky/wh-dra-plugin:latest` automatically from ghcr.io — no manual image import required on each node.
 
 ```bash
 # Apply RBAC, DeviceClass, node labeler, and DaemonSet

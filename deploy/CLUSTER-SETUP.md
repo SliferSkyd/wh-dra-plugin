@@ -291,8 +291,8 @@ If you leave a node out of the ConfigMap, the labeler uses safe defaults (`physi
 The plugin image is built and pushed by GitHub Actions on every push to `main`:
 
 ```
-ghcr.io/SliferSkyd/wh-dra-plugin:latest
-ghcr.io/SliferSkyd/wh-dra-plugin:sha-<commit>
+ghcr.io/slifersky/wh-dra-plugin:latest
+ghcr.io/slifersky/wh-dra-plugin:sha-<commit>
 ```
 
 Both DaemonSets use `imagePullPolicy: Always`, so nodes pull the latest image automatically when the pod restarts. No manual `docker build` or `ctr images import` is needed.

@@ -18,7 +18,7 @@ spec:
       serviceAccountName: wh-dra-plugin
       containers:
       - name: wh-dra-kubelet-plugin
-        image: ghcr.io/SliferSkyd/wh-dra-plugin:latest
+        image: ghcr.io/slifersky/wh-dra-plugin:latest
         imagePullPolicy: Always
         command: ["/usr/local/bin/wh-dra-kubelet-plugin"]
         args:
