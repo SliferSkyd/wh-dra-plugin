@@ -117,17 +117,18 @@ Your Machine (macOS / control host)
   ┌─────────┴─────────┐
   │                   │
 ┌───────────────┐  ┌───────────────┐
-│  T3K Node A   │  │  T3K Node B   │   ... more nodes
+│  t3k-node-a   │  │  t3k-node-b   │
+│ 192.168.1.247 │  │ 192.168.1.243 │
 │               │  │               │
 │  kubelet      │  │  kubelet      │
 │  containerd   │  │  containerd   │
 │               │  │               │
 │  plugin pod   │  │  plugin pod   │  ← DaemonSet auto-deploys
-│  (DaemonSet)  │  │  (DaemonSet)  │
+│  labeler pod  │  │  labeler pod  │  ← sets node labels
 │               │  │               │
-│  workload     │  │  workload     │  ← placed by scheduler
-│  pod          │  │  pod          │
+│  workload-0   │  │  workload-1   │  ← 1 per node, rank=0/1
 └───────────────┘  └───────────────┘
+        └──── T3K ethernet mesh ────┘
 ```
 
 **Version requirements:**
@@ -187,18 +188,20 @@ A goroutine runs in the background for the plugin's lifetime:
 
 ```
 every 30 seconds:
-  run tt-smi -s  →  parse JSON output
-    for each chip:
-      check board_info present  (chip is visible)
-      check heartbeat counter is strictly increasing  (chip is not stalled)
-  
+  for each chip 0..N-1:
+    try os.Open("/dev/tenstorrent/<i>")
+      success → chip is present and driver-accessible
+      error   → chip missing or driver crashed
+
   if status changed (healthy ↔ unhealthy):
     republish ResourceSlice
       healthy   → full ResourceSlice  (scheduler places new pods here)
       unhealthy → empty ResourceSlice (scheduler stops placing pods here)
 ```
 
-The health state feeds directly back into scheduling — a stalled chip is invisible to the scheduler within one 30-second tick.
+The health state feeds directly back into scheduling — a missing chip is invisible to the scheduler within one 30-second tick.
+
+**Why not `tt-smi`?** We originally used `tt-smi -s` (a Python process) for health checks, but discovered it hangs indefinitely when the chip ethernet mesh is in an inconsistent state (e.g. after a node reboot while the peer node is still up). `os.Open` is instantaneous, cannot hang, and is the same approach used by Google TPU's device plugin.
 
 ---
 
@@ -277,24 +280,30 @@ User:  kubectl apply -f my-workload.yaml
 - [x] Kubernetes cluster deployed: Kubespray v2.31.0 + k8s v1.35.0
   - control-plane-01 (192.168.1.60) — Ready
   - t3k-node-a (192.168.1.247) — Ready, labeled
-- [x] CDI enabled in containerd on t3k-node-a
+  - t3k-node-b (192.168.1.243) — Ready, labeled (added via `scale.yml`)
+- [x] CDI enabled in containerd on both T3K nodes
 - [x] Self-contained container image (`wh-dra-kubelet-plugin:v0.1.0`) — plugin binary + `tt-smi` baked in, no host mounts
-- [x] Plugin deployed as DaemonSet
-- [x] ResourceSlice published and visible to scheduler
+- [x] Plugin deployed as DaemonSet on both nodes
+- [x] ResourceSlices published on both nodes, visible to scheduler
 
 ### Plugin Features
 - [x] ResourceSlice publication (device advertising)
 - [x] CDI-based device injection (`/dev/tenstorrent/*`, env vars, hugepages, logs)
-- [x] Health monitoring via `tt-smi` heartbeat check (30s interval)
+- [x] Health monitoring via `os.Open /dev/tenstorrent/N` (lightweight, cannot hang)
 - [x] Prometheus metrics at `:9090/metrics`
 - [x] Crash-recovery checkpoint
 - [x] Automatic node labeling (`wh-node-labeler` DaemonSet) — discovers arch/board/chip-count from tt-smi, reads topology from ConfigMap
+- [x] `/tmp/tt_logs` auto-created on host via `hostPath: DirectoryOrCreate` in DaemonSet
 
 ### Tests Run
 - [x] **test-claim** — device injection verified (env vars + `/dev/tenstorrent/` in container)
 - [x] **test-two-pods** — DRA exclusivity verified (pod-b blocks until pod-a releases device)
+- [x] **multinode StatefulSet** — verified two pods scheduled on separate T3K nodes:
+  ```
+  wh-t3k-worker-0 → t3k-node-a  TT_MESH_HOST_RANK=0  /dev/tenstorrent/0-3
+  wh-t3k-worker-1 → t3k-node-b  TT_MESH_HOST_RANK=1  /dev/tenstorrent/0-3
+  ```
 - [ ] **test-ttnn** — hardware test pending (needs `npu-metal-llk:latest` image imported)
-- [ ] **multinode** — needs second T3K node
 
 ---
 
@@ -303,10 +312,11 @@ User:  kubectl apply -f my-workload.yaml
 ### Short-term
 | Item | Notes |
 |---|---|
-| Run `test-ttnn.yaml` | Import `npu-metal-llk:latest` into containerd on t3k-node-a, then `kubectl apply` |
-| Test auto node labeling with t3k-node-b | Add ConfigMap entry, import image, verify labels applied automatically |
+| Run `test-ttnn.yaml` | Import `npu-metal-llk:latest` into containerd on both T3K nodes, then `kubectl apply` |
+| Re-enable health monitoring | Hardware issues on t3k-node-b resolved; re-enable `--health-check-interval=30s` in DaemonSet |
+| Fix `board-type=unknown` | wh-node-labeler correctly parses `"n300 L"` → `"n300"` in latest code; needs image rebuild + redeploy |
 | Fix VM network isolation | Control plane can't reach kubelet port 10250 on worker — `kubectl logs/exec` times out; workaround: `crictl logs` on node directly |
-| Add second T3K node | Required for multinode StatefulSet and MPI tests |
+| MPI Operator setup | Required for `multinode/test-mpi-two-t3k.yaml` distributed training test |
 
 ### Production hardening
 | Item | Notes |
@@ -314,16 +324,15 @@ User:  kubectl apply -f my-workload.yaml
 | Set up container registry | Push `wh-dra-kubelet-plugin:v0.1.0` to Harbor/ACR so nodes pull automatically instead of manual `ctr import` |
 | CI/CD pipeline | Auto-build and push image on git push; auto-rollout to cluster |
 | Deploy Odin InferenceServiceTemplates | `deploy/odin/` presets ready; need MIF operator running |
-| MPI Operator setup | Required for `multinode/test-mpi-two-t3k.yaml` |
 | Fix `kubectl logs` networking | Investigate hypervisor port group / VLAN isolation between control plane VM and T3K node |
 
 ### Nice to have
 | Item | Notes |
 |---|---|
+| Integrate tt-fabric-manager | Replace `tt-smi` subprocess (Python, can hang) with TTFM gRPC `GetTopology()` call — eliminates wh-node-labeler entirely and auto-detects T3K topology from `ExitNodeInfo` |
 | Deep hardware telemetry | Export temperature, power, utilization from `tt-smi -s` as Prometheus metrics |
-| Fault / error monitoring | Parse tt-kmd dmesg errors; detect silent hardware failures beyond heartbeat stall |
+| Fault / error monitoring | Parse tt-kmd dmesg errors; detect silent hardware failures |
 | Graceful drain | On SIGTERM: publish empty ResourceSlice, wait for running workloads to finish |
-| Automatic Galaxy topology discovery | Auto-assign `physical-pod`/`host-rank`/`pod-size` via Tenstorrent Ethernet neighbor detection |
 | Helm chart | Package all deploy YAMLs for easier versioning |
 | Alerting | Wire Prometheus metrics to Alertmanager for health state changes |
 
