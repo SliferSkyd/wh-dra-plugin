@@ -10,10 +10,10 @@
 |---|:---:|:---:|:---:|---|
 | **Device discovery & advertising** | ✅ | ✅ | ✅ | All three publish devices to the scheduler |
 | **Device injection into containers** | ✅ | ✅ | ✅ | NVIDIA/us use CDI; TPU uses device plugin API |
-| **Basic health monitoring** | ✅ | ✅ | ✅ | We use tt-smi heartbeat; NVIDIA uses DCGM |
+| **Basic health monitoring** | ✅ | ✅ | ✅ | We use `os.Open /dev/tenstorrent/N`; NVIDIA uses DCGM |
 | **Scheduler feedback on unhealthy node** | ✅ | ✅ | ✅ | Empty ResourceSlice / taint |
 | **Prometheus metrics** | ✅ | ✅ | ✅ | We have basic metrics; NVIDIA has ~100 |
-| **Automatic node labeling** | ✅ (GFD) | ✅ | ❌ | We require manual `kubectl label` |
+| **Automatic node labeling** | ✅ (GFD) | ✅ | ✅ | `wh-node-labeler` DaemonSet auto-labels on startup |
 | **Automatic topology discovery** | ✅ (NVLink topo) | ✅ | ❌ | physical-pod / host-rank / pod-size must be set manually in ConfigMap |
 | **Automatic driver installation** | ✅ | ✅ (GKE managed) | ❌ | tt-kmd must be pre-installed manually |
 | **Deep hardware telemetry** | ✅ (DCGM) | ✅ | ❌ | Temperature, power, utilization, ECC, bandwidth |
@@ -33,17 +33,15 @@
 
 ## What each missing feature means in practice
 
-### ❌ Automatic node labeling
+### ✅ Automatic node labeling — DONE (June 2026)
 
 **NVIDIA:** GPU Feature Discovery (GFD) runs as a DaemonSet, reads GPU properties via NVML, and automatically sets labels like `nvidia.com/gpu.product=A100-SXM4-80GB`, `nvidia.com/gpu.memory=80000`, `nvidia.com/cuda.driver.major=535`.
 
 **TPU:** GKE automatically labels TPU node pools with chip type, topology, and accelerator count.
 
-**Ours:** An operator must run `kubectl label node t3k-node-a tenstorrent.com/arch=wormhole ...` manually after every cluster reset.
+**Ours:** `wh-node-labeler` DaemonSet runs on every T3K node. At startup and every 5 minutes it runs `tt-smi -s` to detect `arch`, `board-type`, and `chip-count`, and reads the `tt-node-topology` ConfigMap for `physical-pod`, `host-rank`, and `pod-size`. Labels are applied automatically — no manual `kubectl label` needed.
 
-**Impact:** Labels are silently missing after any cluster reset. The DaemonSet won't deploy and workloads won't schedule — and there's no warning, the cluster just looks like it has no T3K nodes.
-
-**Fix:** A small DaemonSet (similar to GFD) that reads `/dev/tenstorrent/`, queries `tt-smi`, and self-labels the node. Or a one-time node join script called by Kubespray.
+**Remaining gap:** `tt-node-topology` ConfigMap must still be populated manually per node (physical topology cannot be auto-detected without TTFM or Ethernet neighbor discovery).
 
 ---
 
@@ -191,7 +189,7 @@ This requires tt-metal APIs or low-level mesh access and is non-trivial. Manual 
 | Priority | Gap | Effort | Impact |
 |---|---|---|---|
 | ~~**P0**~~ | ~~Self-contained container image~~ | ~~Medium~~ | ✅ Done — `wh-dra-kubelet-plugin:v0.1.0` |
-| **P0** | Automatic node labeling | Low | Cluster resets break deployments silently |
+| ~~**P0**~~ | ~~Automatic node labeling~~ | ~~Low~~ | ✅ Done — `wh-node-labeler` DaemonSet |
 | **P1** | Deep hardware telemetry | Medium | Ops visibility for production |
 | **P1** | Fault / error code monitoring | Medium | Silent failures in production |
 | **P1** | Graceful drain | Medium | Required for maintenance without workload disruption |

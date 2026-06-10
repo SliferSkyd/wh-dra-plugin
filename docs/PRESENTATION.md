@@ -303,6 +303,12 @@ User:  kubectl apply -f my-workload.yaml
   wh-t3k-worker-0 → t3k-node-a  TT_MESH_HOST_RANK=0  /dev/tenstorrent/0-3
   wh-t3k-worker-1 → t3k-node-b  TT_MESH_HOST_RANK=1  /dev/tenstorrent/0-3
   ```
+- [x] **scheduler stress test** — 10 jobs × 10s each, parallelism=2; scheduler distributed evenly:
+  ```
+  t3k-node-a: 5 completions   t3k-node-b: 5 completions
+  At most 2 pods running simultaneously (one per node, DRA exclusive)
+  Each freed node immediately picked up the next queued job
+  ```
 - [ ] **test-ttnn** — hardware test pending (needs `npu-metal-llk:latest` image imported)
 
 ---
@@ -361,13 +367,13 @@ A chip can be visible and responding to `tt-smi` but have its firmware frozen. T
 kubectl get nodes
 kubectl get resourceslices
 
-# Plugin status
-kubectl -n kube-system get pods -l app=wh-dra-kubelet-plugin
+# Plugin + labeler status on both nodes
+kubectl -n kube-system get pods -l app=wh-dra-kubelet-plugin -o wide
+kubectl -n kube-system get pods -l app=wh-node-labeler -o wide
 
-# Run smoke test
+# Run smoke test (single node)
 kubectl apply -f deploy/test-claim.yaml
 kubectl get pods -w
-# (on t3k-node-a) sudo crictl logs $(sudo crictl ps -a | grep wh-demo | awk '{print $1}')
 kubectl delete -f deploy/test-claim.yaml
 
 # Run exclusivity test
@@ -375,4 +381,16 @@ kubectl apply -f deploy/test-two-pods.yaml
 kubectl get pods -w
 # pod-a runs, pod-b is Pending until pod-a finishes
 kubectl delete -f deploy/test-two-pods.yaml
+
+# Run multinode StatefulSet (one pod per T3K node)
+kubectl apply -f deploy/multinode/test-statefulset-two-t3k.yaml
+kubectl get pods -l app=wh-t3k-worker -o wide
+# wh-t3k-worker-0 → t3k-node-a, wh-t3k-worker-1 → t3k-node-b
+kubectl delete -f deploy/multinode/test-statefulset-two-t3k.yaml
+
+# Run scheduler stress test (10 jobs, 2 parallel, ~50s total)
+kubectl apply -f deploy/multinode/test-job-scheduler.yaml
+kubectl get pods -l job-name=wh-t3k-scheduler-test -o wide -w
+kubectl get job wh-t3k-scheduler-test -w
+kubectl delete -f deploy/multinode/test-job-scheduler.yaml
 ```

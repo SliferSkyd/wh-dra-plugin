@@ -281,6 +281,7 @@ published ResourceSlice: device wormhole-t3k with 4 chips on pool t3k-node-a
 | `test-claim` | ✅ PASS | Device injection works end-to-end |
 | `test-two-pods` | ✅ PASS | DRA exclusivity — only one pod holds device at a time |
 | **multinode StatefulSet** | ✅ PASS | Two pods, two nodes, correct rank/devices injected |
+| **scheduler stress test** | ✅ PASS | 10 jobs distributed evenly: 5×node-a, 5×node-b |
 | `test-ttnn` | ⏳ pending | Real silicon via ttnn (needs image import) |
 
 ---
@@ -326,25 +327,20 @@ kubectl get resourceslices
 
 # Show plugin + labeler running on both nodes
 kubectl -n kube-system get pods -l app=wh-dra-kubelet-plugin -o wide
-kubectl -n kube-system get pods -l app=wh-node-labeler -o wide
-
-# Run device injection test (single node)
-kubectl apply -f deploy/test-claim.yaml
-kubectl get pods -w
-# [on t3k-node-a] sudo crictl logs <container-id>
-kubectl delete -f deploy/test-claim.yaml
 
 # Run multinode StatefulSet — one pod per T3K node
 kubectl apply -f deploy/multinode/test-statefulset-two-t3k.yaml
 kubectl get pods -l app=wh-t3k-worker -o wide
-# → wh-t3k-worker-0  Running  t3k-node-a
-# → wh-t3k-worker-1  Running  t3k-node-b
+# → wh-t3k-worker-0  Running  t3k-node-a  (TT_MESH_HOST_RANK=0)
+# → wh-t3k-worker-1  Running  t3k-node-b  (TT_MESH_HOST_RANK=1)
+kubectl delete -f deploy/multinode/test-statefulset-two-t3k.yaml
 
-# Show what each worker sees (devices + env vars injected by CDI)
-# [on t3k-node-a] sudo crictl logs $(sudo crictl ps | grep wh-t3k-worker-0 | awk '{print $1}')
-# Output: TT_MESH_HOST_RANK=0, /dev/tenstorrent/0-3
-# [on t3k-node-b] sudo crictl logs $(sudo crictl ps | grep wh-t3k-worker-1 | awk '{print $1}')
-# Output: TT_MESH_HOST_RANK=1, /dev/tenstorrent/0-3
+# Run scheduler stress test — 10 jobs × 10s, 2 at a time across both nodes
+kubectl apply -f deploy/multinode/test-job-scheduler.yaml
+kubectl get pods -l job-name=wh-t3k-scheduler-test -o wide -w
+# Expected: never more than 2 Running, 5 completions per node
+# Total runtime: ~50s
+kubectl delete -f deploy/multinode/test-job-scheduler.yaml
 ```
 
 ---

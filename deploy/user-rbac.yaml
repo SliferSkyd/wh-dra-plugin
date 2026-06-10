@@ -1,0 +1,44 @@
+# Developer RBAC — grants a team member permission to run T3K workloads
+# in a dedicated namespace without cluster-admin access.
+#
+# Usage:
+#   # 1. Create namespace and RBAC
+#   kubectl apply -f deploy/user-rbac.yaml
+#
+#   # 2. Generate a kubeconfig for the user
+#   ./deploy/scripts/gen-kubeconfig.sh <username> t3k-workloads
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: t3k-workloads
+---
+# ClusterRole: read ResourceSlices + DeviceClass (cluster-scoped, read-only)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: t3k-device-reader
+rules:
+- apiGroups: [resource.k8s.io]
+  resources: [resourceslices, deviceclasses]
+  verbs: [get, list, watch]
+---
+# Role: full workload management within t3k-workloads namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: t3k-developer
+  namespace: t3k-workloads
+rules:
+- apiGroups: [""]
+  resources: [pods, pods/log, pods/exec, services, configmaps]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [apps]
+  resources: [statefulsets, deployments]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [batch]
+  resources: [jobs]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [resource.k8s.io]
+  resources: [resourceclaims, resourceclaimtemplates]
+  verbs: [get, list, watch, create, update, patch, delete]
