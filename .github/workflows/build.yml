@@ -65,5 +65,4 @@ jobs:
         SHA=$(echo "${{ github.sha }}" | cut -c1-7)
         helm upgrade --install wh-dra-plugin ./helm/wh-dra-plugin \
           --namespace kube-system \
-          --set image.tag=sha-${SHA} \
-          --wait --timeout 120s
+          --set image.tag=sha-${SHA}
