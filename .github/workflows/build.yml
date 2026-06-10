@@ -51,11 +51,8 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    # Requires KUBECONFIG_B64 secret set in repo settings.
-    # Skip silently if not configured.
-    environment: production
 
     steps:
     - uses: actions/checkout@v4
@@ -63,22 +60,11 @@ jobs:
     - name: Install Helm
       uses: azure/setup-helm@v4
 
-    - name: Write kubeconfig
-      env:
-        KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
-      if: env.KUBECONFIG_B64 != ''
-      run: |
-        mkdir -p ~/.kube
-        echo "$KUBECONFIG_B64" | base64 -d > ~/.kube/config
-        chmod 600 ~/.kube/config
-
     - name: Deploy via Helm
-      env:
-        KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
-      if: env.KUBECONFIG_B64 != ''
       run: |
         SHA=$(echo "${{ github.sha }}" | cut -c1-7)
         helm upgrade --install wh-dra-plugin ./helm/wh-dra-plugin \
           --namespace kube-system \
           --set image.tag=sha-${SHA} \
+          --kubeconfig /etc/kubernetes/admin.conf \
           --wait --timeout 120s
