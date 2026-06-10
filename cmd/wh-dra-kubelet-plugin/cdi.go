@@ -62,6 +62,10 @@ func NewCDIHandler(cdiDir string, manager *WHManager) (*CDIHandler, error) {
 // CreateCommonSpecFile writes the node-level CDI spec (env vars + mounts).
 // Called once at plugin startup.
 func (h *CDIHandler) CreateCommonSpecFile() error {
+	// Ensure host paths exist before the CDI spec references them as bind mounts.
+	if err := os.MkdirAll("/tmp/tt_logs", 0777); err != nil {
+		return fmt.Errorf("create /tmp/tt_logs: %w", err)
+	}
 	spec := cdiSpec{
 		CDIVersion: "0.5.0",
 		Kind:       cdiKind,

@@ -113,7 +113,7 @@ func (d *driver) publishResourceSlice(ctx context.Context) error {
 // republishes the ResourceSlice so the scheduler sees the change immediately.
 // A no-op if ttSmiPath is empty or interval is zero.
 func (d *driver) startHealthMonitoring(ctx context.Context, ttSmiPath string, interval time.Duration) {
-	if ttSmiPath == "" || interval == 0 {
+	if interval == 0 {
 		klog.Info("health monitoring disabled")
 		return
 	}
@@ -124,8 +124,8 @@ func (d *driver) startHealthMonitoring(ctx context.Context, ttSmiPath string, in
 			klog.Errorf("republish ResourceSlice after health change: %v", err)
 		}
 	})
-	klog.Infof("health monitoring started (interval=%s tt-smi=%s chips=%d)",
-		interval, ttSmiPath, d.manager.chipCount)
+	klog.Infof("health monitoring started (interval=%s chips=%d)",
+		interval, d.manager.chipCount)
 }
 
 func (d *driver) Stop() {
