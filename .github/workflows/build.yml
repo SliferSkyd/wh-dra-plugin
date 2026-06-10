@@ -66,4 +66,5 @@ jobs:
         helm upgrade --install wh-dra-plugin ./helm/wh-dra-plugin \
           --namespace kube-system \
           --set image.tag=sha-${SHA} \
+          --server-side --force-conflicts \
           --wait --timeout 120s
