@@ -1,0 +1,65 @@
+# Scheduler stress test: 10 workloads, 10s each, 2 running at a time.
+#
+# With 2 T3K nodes the scheduler runs exactly 2 pods in parallel — one per
+# node. As each pod completes the next one is queued onto the freed node.
+# Expected timeline:
+#
+#   t=0s   pod 0 → t3k-node-a,  pod 1 → t3k-node-b
+#   t=10s  pod 2 → t3k-node-?,  pod 3 → t3k-node-?
+#   t=20s  pod 4 → ...,         pod 5 → ...
+#   ...
+#   t=50s  all 10 completions done
+#
+# Watch progress:
+#   kubectl get pods -l job-name=wh-t3k-scheduler-test -o wide -w
+#   kubectl get job wh-t3k-scheduler-test -w
+#
+# Run:
+#   kubectl apply  -f deploy/multinode/test-job-scheduler.yaml
+#   kubectl delete -f deploy/multinode/test-job-scheduler.yaml
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: wh-t3k-job-template
+spec:
+  spec:
+    devices:
+      requests:
+      - name: t3k
+        exactly:
+          deviceClassName: t3k.wormhole.tenstorrent.com
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: wh-t3k-scheduler-test
+spec:
+  completions: 10
+  parallelism: 2
+  template:
+    spec:
+      restartPolicy: Never
+      tolerations:
+      - key: node.kubernetes.io/disk-pressure
+        operator: Exists
+        effect: NoSchedule
+      resourceClaims:
+      - name: t3k
+        resourceClaimTemplateName: wh-t3k-job-template
+      containers:
+      - name: worker
+        image: ubuntu:22.04
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          echo "=== $(hostname): started at $(date) ==="
+          echo "Node:    $(cat /proc/sys/kernel/hostname)"
+          echo "Devices: $(ls /dev/tenstorrent/)"
+          env | grep -E "^TT_|^WH_" | sort
+          echo "=== sleeping 10s ==="
+          sleep 10
+          echo "=== $(hostname): done at $(date) ==="
+        resources:
+          claims:
+          - name: t3k
