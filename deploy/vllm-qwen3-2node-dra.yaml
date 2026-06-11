@@ -61,8 +61,10 @@ spec:
           - name: wh-t3k
           requests:
             hugepages-1Gi: 8Gi
+            memory: 16Gi
           limits:
             hugepages-1Gi: 8Gi
+            memory: 16Gi
         volumeMounts:
         - name: nvme0
           mountPath: /mnt/nvme0
