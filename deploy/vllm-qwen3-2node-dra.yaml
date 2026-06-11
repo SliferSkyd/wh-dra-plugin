@@ -59,11 +59,17 @@ spec:
         resources:
           claims:
           - name: wh-t3k
+          requests:
+            hugepages-1Gi: 8Gi
+          limits:
+            hugepages-1Gi: 8Gi
         volumeMounts:
         - name: nvme0
           mountPath: /mnt/nvme0
         - name: shared
           mountPath: /shared
+        - name: hugepages
+          mountPath: /dev/hugepages-1G
 
       volumes:
       - name: nvme0
@@ -74,3 +80,6 @@ spec:
         hostPath:
           path: /shared
           type: Directory
+      - name: hugepages
+        emptyDir:
+          medium: HugePages-1Gi
