@@ -2,6 +2,21 @@
 # Deployment with replicas: 2 — one spec, scheduler places each pod
 # on a different node based on T3K device availability.
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: moreh-vllm-qwen3
+  namespace: default
+spec:
+  type: NodePort
+  selector:
+    app: moreh-vllm-qwen3
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+    nodePort: 30800
+---
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaimTemplate
 metadata:

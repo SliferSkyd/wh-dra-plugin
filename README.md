@@ -4,6 +4,8 @@ Kubernetes DRA (Dynamic Resource Allocation) plugin for Tenstorrent Wormhole har
 
 Each Wormhole node is published as a single allocatable device. When a pod claims it, the plugin injects `/dev/tenstorrent/*` device nodes and mesh environment variables into the container via CDI — no `privileged: true` required in workload pods.
 
+For a full picture of which components run on which hosts, how they communicate, and the end-to-end allocation flow, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Hardware topology
 
 This plugin targets **T3K** units — each T3K is one host with an n300 board:
