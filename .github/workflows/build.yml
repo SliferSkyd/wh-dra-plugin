@@ -3,8 +3,22 @@ name: Build and push
 on:
   push:
     branches: [main]
+    paths:
+      - 'cmd/**'
+      - 'pkg/**'
+      - 'Dockerfile'
+      - 'go.mod'
+      - 'go.sum'
+      - 'helm/**'
   pull_request:
     branches: [main]
+    paths:
+      - 'cmd/**'
+      - 'pkg/**'
+      - 'Dockerfile'
+      - 'go.mod'
+      - 'go.sum'
+      - 'helm/**'
 
 env:
   REGISTRY: ghcr.io
