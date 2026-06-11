@@ -1,0 +1,72 @@
+# Two independent vLLM instances using DRA plugin.
+# Deployment with replicas: 2 — one spec, scheduler places each pod
+# on a different node based on T3K device availability.
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: wh-t3k-template
+  namespace: default
+spec:
+  spec:
+    devices:
+      requests:
+      - name: t3k
+        exactly:
+          deviceClassName: t3k.wormhole.tenstorrent.com
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: moreh-vllm-qwen3
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: moreh-vllm-qwen3
+  template:
+    metadata:
+      labels:
+        app: moreh-vllm-qwen3
+    spec:
+      hostNetwork: true
+      hostIPC: true
+      restartPolicy: Always
+
+      resourceClaims:
+      - name: wh-t3k
+        resourceClaimTemplateName: wh-t3k-template
+
+      containers:
+      - name: vllm
+        image: 192.168.1.60:5000/moreh-vllm:dev
+        imagePullPolicy: Always
+        command:
+        - bash
+        - run
+        - serve
+        - qwen3
+        - t3k-gsm8k-corr
+        - --no-lock
+        env:
+        - name: MOREH_QWEN3_T3K_MODEL_ROOT
+          value: /shared/moreh-models
+        resources:
+          claims:
+          - name: wh-t3k
+        volumeMounts:
+        - name: nvme0
+          mountPath: /mnt/nvme0
+        - name: shared
+          mountPath: /shared
+
+      volumes:
+      - name: nvme0
+        hostPath:
+          path: /mnt/nvme0
+          type: Directory
+      - name: shared
+        hostPath:
+          path: /shared
+          type: Directory
