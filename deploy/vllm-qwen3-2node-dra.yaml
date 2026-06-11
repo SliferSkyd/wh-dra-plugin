@@ -34,6 +34,11 @@ spec:
       hostIPC: true
       restartPolicy: Always
 
+      tolerations:
+      - key: node.kubernetes.io/disk-pressure
+        operator: Exists
+        effect: NoSchedule
+
       resourceClaims:
       - name: wh-t3k
         resourceClaimTemplateName: wh-t3k-template
