@@ -16,6 +16,8 @@ spec:
       nodeSelector:
         tenstorrent.com/arch: wormhole
       serviceAccountName: wh-dra-plugin
+      imagePullSecrets:
+      - name: ghcr-credentials
       containers:
       - name: wh-dra-kubelet-plugin
         image: ghcr.io/slifersky/wh-dra-plugin:latest

@@ -8,7 +8,8 @@ image:
 
 # Set to [{name: ghcr-credentials}] for private ghcr.io packages.
 # See deploy/DEPLOY.md for how to create the secret.
-imagePullSecrets: []
+imagePullSecrets:
+  - name: ghcr-credentials
 
 plugin:
   healthCheckInterval: 30s
