@@ -43,6 +43,12 @@ controller:
     enabled: true
     port: 8080
     uiPath: /usr/local/share/tt-fabric-manager/web
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: ""
+  tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
 
 agent:
   # Override the chart's default node match: run the agent on the same nodes the
