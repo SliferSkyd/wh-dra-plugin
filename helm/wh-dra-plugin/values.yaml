@@ -34,3 +34,4 @@ nodeSelector:
 topology:
   t3k-node-a: "physical-pod=t3k-a host-rank=0 pod-size=2"
   t3k-node-b: "physical-pod=t3k-a host-rank=1 pod-size=2"
+
