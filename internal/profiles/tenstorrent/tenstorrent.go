@@ -129,9 +129,7 @@ func (p *Profile) DeviceNodePaths(name string) ([]string, error) {
 // bundles and returns the corresponding /dev paths.
 func (p *Profile) buildDevice(bundles []hostBundle) (resourceapi.Device, []string) {
 	var (
-		uniqueIDs     []string
 		remoteChipIDs []string
-		remoteUIDs    []string
 		pciAddrs      []string
 		paths         []string
 		totalMem      uint64
@@ -144,7 +142,6 @@ func (p *Profile) buildDevice(bundles []hostBundle) (resourceapi.Device, []strin
 		mmio := b.mmio
 		mmioCount++
 		totalMem += mmio.GetMemoryBytes()
-		uniqueIDs = append(uniqueIDs, fmt.Sprintf("%d", mmio.GetUniqueId()))
 		paths = append(paths, fmt.Sprintf("/dev/tenstorrent/%d", mmio.GetDeviceNodeId()))
 
 		if chipArch == "" {
@@ -157,9 +154,7 @@ func (p *Profile) buildDevice(bundles []hostBundle) (resourceapi.Device, []strin
 		for _, r := range b.remotes {
 			remoteCount++
 			totalMem += r.GetMemoryBytes()
-			uniqueIDs = append(uniqueIDs, fmt.Sprintf("%d", r.GetUniqueId()))
 			remoteChipIDs = append(remoteChipIDs, fmt.Sprintf("%d", r.GetChipId()))
-			remoteUIDs = append(remoteUIDs, fmt.Sprintf("%d", r.GetUniqueId()))
 		}
 	}
 
@@ -174,14 +169,12 @@ func (p *Profile) buildDevice(bundles []hostBundle) (resourceapi.Device, []strin
 		"tenstorrent.com/pod_size":     {IntValue: ptrI(int64(p.podSize))},
 		"tenstorrent.com/chip_count":   {IntValue: ptrI(totalChips)},
 		// FM-derived
-		"tenstorrent.com/chip_arch":        {StringValue: ptrS(chipArch)},
-		"tenstorrent.com/mmio_chip_count":  {IntValue: ptrI(int64(mmioCount))},
+		"tenstorrent.com/chip_arch":         {StringValue: ptrS(chipArch)},
+		"tenstorrent.com/mmio_chip_count":   {IntValue: ptrI(int64(mmioCount))},
 		"tenstorrent.com/remote_chip_count": {IntValue: ptrI(int64(remoteCount))},
-		"tenstorrent.com/unique_ids":        {StringValue: ptrS(strings.Join(uniqueIDs, ","))},
 	}
 	if len(remoteChipIDs) > 0 {
 		attrs["tenstorrent.com/remote_chip_ids"] = resourceapi.DeviceAttribute{StringValue: ptrS(strings.Join(remoteChipIDs, ","))}
-		attrs["tenstorrent.com/remote_unique_ids"] = resourceapi.DeviceAttribute{StringValue: ptrS(strings.Join(remoteUIDs, ","))}
 	}
 	if len(pciAddrs) > 0 {
 		attrs["tenstorrent.com/pci_addresses"] = resourceapi.DeviceAttribute{StringValue: ptrS(strings.Join(pciAddrs, ","))}
