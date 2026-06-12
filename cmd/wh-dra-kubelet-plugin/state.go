@@ -11,6 +11,7 @@ import (
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	"k8s.io/klog/v2"
 
+	"github.com/tenstorrent/wh-dra-plugin/internal/profiles"
 	flockpkg "github.com/tenstorrent/wh-dra-plugin/pkg/flock"
 	"github.com/tenstorrent/wh-dra-plugin/pkg/metrics"
 )
@@ -20,6 +21,7 @@ type DeviceState struct {
 	mu         sync.Mutex
 	cdi        *CDIHandler
 	manager    *WHManager
+	profile    profiles.Profile // nil when FM integration is disabled
 	cpManager  *CheckpointManager
 	pulock     *flockpkg.Flock
 	driverName string
@@ -28,6 +30,7 @@ type DeviceState struct {
 
 func NewDeviceState(
 	manager *WHManager,
+	profile profiles.Profile,
 	cdi *CDIHandler,
 	cpManager *CheckpointManager,
 	pulock *flockpkg.Flock,
@@ -36,6 +39,7 @@ func NewDeviceState(
 	return &DeviceState{
 		cdi:        cdi,
 		manager:    manager,
+		profile:    profile,
 		cpManager:  cpManager,
 		pulock:     pulock,
 		driverName: driverName,
@@ -92,7 +96,17 @@ func (s *DeviceState) PrepareResourceClaims(
 			continue
 		}
 
-		if err := s.cdi.CreateClaimSpecFile(string(uid)); err != nil {
+		// Resolve which host device paths to inject. When FM integration is
+		// active the profile answers this from topology data; otherwise we
+		// fall back to all discovered /dev/tenstorrent/* nodes.
+		devicePaths, err := s.devicePathsForClaim(claim)
+		if err != nil {
+			metrics.IncPrepareError(s.driverName, "device_paths")
+			results[uid] = kubeletplugin.PrepareResult{Err: err}
+			continue
+		}
+
+		if err := s.cdi.CreateClaimSpecFile(string(uid), devicePaths); err != nil {
 			metrics.IncPrepareError(s.driverName, "cdi_write")
 			results[uid] = kubeletplugin.PrepareResult{Err: err}
 			continue
@@ -118,6 +132,32 @@ func (s *DeviceState) PrepareResourceClaims(
 	metrics.SetPreparedDevices(s.driverName, s.nodeName, len(cp.PreparedClaims))
 	metrics.ObserveRequest(s.driverName, "prepare", time.Since(t0))
 	return results, nil
+}
+
+// devicePathsForClaim resolves the /dev/tenstorrent paths for devices
+// allocated to a claim. When the FM profile is active, it reads the
+// allocation result to find the device name and asks the profile for the
+// paths. Without FM, it returns nil so CDI falls back to all manager nodes.
+func (s *DeviceState) devicePathsForClaim(claim *resourceapi.ResourceClaim) ([]string, error) {
+	if s.profile == nil {
+		return nil, nil // CDI fallback: inject all manager.deviceNodes
+	}
+	if claim.Status.Allocation == nil {
+		return nil, fmt.Errorf("claim %s has no allocation status", claim.UID)
+	}
+
+	var paths []string
+	for _, result := range claim.Status.Allocation.Devices.Results {
+		if result.Driver != s.driverName {
+			continue
+		}
+		p, err := s.profile.DeviceNodePaths(result.Device)
+		if err != nil {
+			return nil, fmt.Errorf("device paths for %q in claim %s: %w", result.Device, claim.UID, err)
+		}
+		paths = append(paths, p...)
+	}
+	return paths, nil
 }
 
 func (s *DeviceState) UnprepareResourceClaims(

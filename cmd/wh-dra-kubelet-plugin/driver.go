@@ -12,6 +12,9 @@ import (
 	"k8s.io/dynamic-resource-allocation/resourceslice"
 	"k8s.io/klog/v2"
 
+	"github.com/tenstorrent/wh-dra-plugin/internal/fabricmanager"
+	"github.com/tenstorrent/wh-dra-plugin/internal/profiles"
+	tenstorrentprofile "github.com/tenstorrent/wh-dra-plugin/internal/profiles/tenstorrent"
 	flockpkg "github.com/tenstorrent/wh-dra-plugin/pkg/flock"
 )
 
@@ -21,7 +24,8 @@ type driver struct {
 	helper  *kubeletplugin.Helper
 	state   *DeviceState
 	manager *WHManager
-	healthy bool // current T3K health; false → publish empty pool
+	profile profiles.Profile // nil when FM integration is disabled
+	healthy bool             // false → publish empty pool
 }
 
 func NewDriver(ctx context.Context, cfg *config, k8s kubernetes.Interface) (*driver, error) {
@@ -32,6 +36,22 @@ func NewDriver(ctx context.Context, cfg *config, k8s kubernetes.Interface) (*dri
 	klog.Infof("node %s: arch=%s board=%s chips=%d pod=%s rank=%d",
 		manager.nodeName, manager.arch, manager.boardType,
 		manager.chipCount, manager.physicalPod, manager.hostRank)
+
+	// Wire FM integration when an agent address is provided.
+	var prof profiles.Profile
+	if cfg.fmAddr != "" {
+		fmClient, err := fabricmanager.Dial(cfg.fmAddr)
+		if err != nil {
+			klog.Warningf("cannot connect to FM agent at %s: %v; falling back to label-based device", cfg.fmAddr, err)
+		} else {
+			prof = tenstorrentprofile.New(
+				cfg.nodeName, fmClient,
+				manager.arch, manager.boardType, manager.physicalPod, manager.ethernetIface,
+				manager.hostRank, manager.podSize,
+			)
+			klog.Infof("FM integration enabled: agent at %s", cfg.fmAddr)
+		}
+	}
 
 	cdi, err := NewCDIHandler(cfg.cdiDir, manager)
 	if err != nil {
@@ -47,7 +67,7 @@ func NewDriver(ctx context.Context, cfg *config, k8s kubernetes.Interface) (*dri
 	}
 
 	pulock := flockpkg.NewFlock(filepath.Join(cfg.checkpointDir, "pu.lock"))
-	state := NewDeviceState(manager, cdi, cpManager, pulock, driverName)
+	state := NewDeviceState(manager, prof, cdi, cpManager, pulock, driverName)
 
 	pluginDir := filepath.Join(cfg.pluginDir)
 
@@ -63,7 +83,7 @@ func NewDriver(ctx context.Context, cfg *config, k8s kubernetes.Interface) (*dri
 		return nil, fmt.Errorf("start kubelet plugin: %w", err)
 	}
 
-	d := &driver{helper: helper, state: state, manager: manager, healthy: true}
+	d := &driver{helper: helper, state: state, manager: manager, profile: prof, healthy: true}
 
 	if err := d.publishResourceSlice(ctx); err != nil {
 		return nil, fmt.Errorf("publish resource slice: %w", err)
@@ -73,40 +93,56 @@ func NewDriver(ctx context.Context, cfg *config, k8s kubernetes.Interface) (*dri
 }
 
 func (d *driver) publishResourceSlice(ctx context.Context) error {
-	m := d.manager
+	var resources resourceslice.DriverResources
 
-	var slices []resourceslice.Slice
-	if d.healthy {
-		device := resourceapi.Device{
-			Name: "wormhole-t3k",
-			Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
-				"tenstorrent.com/arch":         {StringValue: ptr(m.arch)},
-				"tenstorrent.com/board_type":   {StringValue: ptr(m.boardType)},
-				"tenstorrent.com/physical_pod": {StringValue: ptr(m.physicalPod)},
-				"tenstorrent.com/host_rank":    {IntValue: ptr(int64(m.hostRank))},
-				"tenstorrent.com/pod_size":     {IntValue: ptr(int64(m.podSize))},
-				"tenstorrent.com/chip_count":   {IntValue: ptr(int64(m.chipCount))},
+	switch {
+	case !d.healthy:
+		// Publish empty pool so the scheduler stops offering this node.
+		resources = resourceslice.DriverResources{
+			Pools: map[string]resourceslice.Pool{
+				d.manager.nodeName: {Slices: nil},
 			},
 		}
-		slices = []resourceslice.Slice{{Devices: []resourceapi.Device{device}}}
-	}
+		klog.Warningf("published empty ResourceSlice on pool %s (T3K unhealthy)", d.manager.nodeName)
 
-	resources := resourceslice.DriverResources{
-		Pools: map[string]resourceslice.Pool{
-			m.nodeName: {Slices: slices},
-		},
+	case d.profile != nil:
+		var err error
+		resources, err = d.profile.EnumerateDevices(ctx)
+		if err != nil {
+			klog.Errorf("FM EnumerateDevices failed: %v; falling back to label-based device", err)
+			resources = d.labelBasedResources()
+		}
+
+	default:
+		resources = d.labelBasedResources()
 	}
 
 	if err := d.helper.PublishResources(ctx, resources); err != nil {
 		return err
 	}
-	if d.healthy {
-		klog.Infof("published ResourceSlice: device wormhole-t3k with %d chips on pool %s",
-			m.chipCount, m.nodeName)
-	} else {
-		klog.Warningf("published empty ResourceSlice on pool %s (T3K unhealthy)", m.nodeName)
-	}
 	return nil
+}
+
+// labelBasedResources builds the pre-FM single-device ResourceSlice from node
+// labels only. Used when FM integration is disabled or temporarily unavailable.
+func (d *driver) labelBasedResources() resourceslice.DriverResources {
+	m := d.manager
+	device := resourceapi.Device{
+		Name: "wormhole-t3k",
+		Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
+			"tenstorrent.com/arch":         {StringValue: ptr(m.arch)},
+			"tenstorrent.com/board_type":   {StringValue: ptr(m.boardType)},
+			"tenstorrent.com/physical_pod": {StringValue: ptr(m.physicalPod)},
+			"tenstorrent.com/host_rank":    {IntValue: ptr(int64(m.hostRank))},
+			"tenstorrent.com/pod_size":     {IntValue: ptr(int64(m.podSize))},
+			"tenstorrent.com/chip_count":   {IntValue: ptr(int64(m.chipCount))},
+		},
+	}
+	return resourceslice.DriverResources{
+		Pools: map[string]resourceslice.Pool{
+			m.nodeName: {Slices: []resourceslice.Slice{{Devices: []resourceapi.Device{device}}}},
+		},
+	}
 }
 
 // startHealthMonitoring begins periodic tt-smi checks. When health flips it

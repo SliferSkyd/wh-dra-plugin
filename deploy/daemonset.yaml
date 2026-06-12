@@ -28,6 +28,7 @@ spec:
         - --metrics-port=9090
         - --tt-smi-path=/usr/local/bin/tt-smi
         - --health-check-interval=30s
+        - --fm-addr=ttfm-agent.ttfm.svc.cluster.local:50053
         env:
         - name: NODE_NAME
           valueFrom:

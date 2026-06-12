@@ -18,14 +18,15 @@ import (
 )
 
 type config struct {
-	nodeName        string
-	pluginDir       string
-	registrarDir    string
-	cdiDir          string
-	checkpointDir   string
-	metricsPort     int
-	ttSmiPath       string
-	healthInterval  time.Duration
+	nodeName       string
+	pluginDir      string
+	registrarDir   string
+	cdiDir         string
+	checkpointDir  string
+	metricsPort    int
+	ttSmiPath      string
+	healthInterval time.Duration
+	fmAddr         string // Fabric Manager agent address; empty disables FM integration
 }
 
 func main() {
@@ -40,6 +41,7 @@ func main() {
 	flag.IntVar(&cfg.metricsPort, "metrics-port", 9090, "Prometheus metrics HTTP port")
 	flag.StringVar(&cfg.ttSmiPath, "tt-smi-path", "", "Path to tt-smi binary; empty disables health monitoring")
 	flag.DurationVar(&cfg.healthInterval, "health-check-interval", 30*time.Second, "How often to run tt-smi health checks (0 to disable)")
+	flag.StringVar(&cfg.fmAddr, "fm-addr", "", "Fabric Manager agent gRPC address (host:port); empty disables FM integration")
 	var kubeconfig string
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to kubeconfig (leave empty to use in-cluster config)")
 	flag.Parse()

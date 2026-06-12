@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"sigs.k8s.io/yaml"
 )
-
 
 const (
 	cdiVendor = "k8s.wormhole.tenstorrent.com"
@@ -23,14 +23,14 @@ type cdiSpec struct {
 }
 
 type cdiDevice struct {
-	Name           string         `json:"name"`
-	ContainerEdits cdiEdits       `json:"containerEdits"`
+	Name           string   `json:"name"`
+	ContainerEdits cdiEdits `json:"containerEdits"`
 }
 
 type cdiEdits struct {
-	Env         []string    `json:"env,omitempty"`
-	DeviceNodes []cdiDev    `json:"deviceNodes,omitempty"`
-	Mounts      []cdiMount  `json:"mounts,omitempty"`
+	Env         []string   `json:"env,omitempty"`
+	DeviceNodes []cdiDev   `json:"deviceNodes,omitempty"`
+	Mounts      []cdiMount `json:"mounts,omitempty"`
 }
 
 type cdiDev struct {
@@ -91,17 +91,33 @@ func (h *CDIHandler) CreateCommonSpecFile() error {
 }
 
 // CreateClaimSpecFile writes a per-claim CDI spec with device nodes.
-// Called in PrepareResourceClaims.
-func (h *CDIHandler) CreateClaimSpecFile(claimUID string) error {
+// When devicePaths is non-nil, only those specific paths are injected
+// (FM-based mode). When devicePaths is nil the spec includes all
+// /dev/tenstorrent/* nodes discovered by the manager (label-based fallback).
+func (h *CDIHandler) CreateClaimSpecFile(claimUID string, devicePaths []string) error {
 	var devNodes []cdiDev
-	for _, dev := range h.manager.deviceNodes {
-		devNodes = append(devNodes, cdiDev{
-			Path:        dev.Path,
-			Type:        dev.Type,
-			Major:       dev.Major,
-			Minor:       dev.Minor,
-			Permissions: "rw",
-		})
+
+	if len(devicePaths) > 0 {
+		// FM-integrated path: inject only the specific devices allocated to
+		// this claim (MMIO chip device nodes as resolved by the profile).
+		for _, path := range devicePaths {
+			node, err := statDeviceNode(path)
+			if err != nil {
+				return fmt.Errorf("stat CDI device %s: %w", path, err)
+			}
+			devNodes = append(devNodes, node)
+		}
+	} else {
+		// Fallback path: inject every /dev/tenstorrent/* entry on this node.
+		for _, dev := range h.manager.deviceNodes {
+			devNodes = append(devNodes, cdiDev{
+				Path:        dev.Path,
+				Type:        dev.Type,
+				Major:       dev.Major,
+				Minor:       dev.Minor,
+				Permissions: "rw",
+			})
+		}
 	}
 
 	spec := cdiSpec{
@@ -137,6 +153,25 @@ func (h *CDIHandler) GetClaimDeviceIDs(claimUID string) []string {
 		fmt.Sprintf("%s=common", cdiKind),
 		fmt.Sprintf("%s=%s", cdiKind, claimUID),
 	}
+}
+
+// statDeviceNode reads the major/minor numbers for a device path.
+func statDeviceNode(path string) (cdiDev, error) {
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		return cdiDev{}, fmt.Errorf("stat %s: %w", path, err)
+	}
+	devType := "c"
+	if st.Mode&syscall.S_IFMT == syscall.S_IFBLK {
+		devType = "b"
+	}
+	return cdiDev{
+		Path:        path,
+		Type:        devType,
+		Major:       int64((st.Rdev >> 8) & 0xfff),
+		Minor:       int64(st.Rdev & 0xff),
+		Permissions: "rw",
+	}, nil
 }
 
 func (h *CDIHandler) writeSpec(name string, spec cdiSpec) error {
