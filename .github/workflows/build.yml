@@ -6,6 +6,7 @@ on:
     paths:
       - 'cmd/**'
       - 'pkg/**'
+      - 'internal/**'
       - 'Dockerfile'
       - 'go.mod'
       - 'go.sum'
@@ -15,6 +16,7 @@ on:
     paths:
       - 'cmd/**'
       - 'pkg/**'
+      - 'internal/**'
       - 'Dockerfile'
       - 'go.mod'
       - 'go.sum'
