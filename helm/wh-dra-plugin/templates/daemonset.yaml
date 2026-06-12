@@ -35,6 +35,9 @@ spec:
         - --metrics-port={{ .Values.plugin.metricsPort }}
         - --tt-smi-path={{ .Values.plugin.ttSmiPath }}
         - --health-check-interval={{ .Values.plugin.healthCheckInterval }}
+        {{- if .Values.plugin.fmAddr }}
+        - --fm-addr={{ .Values.plugin.fmAddr }}
+        {{- end }}
         env:
         - name: NODE_NAME
           valueFrom:

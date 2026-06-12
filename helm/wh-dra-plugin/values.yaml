@@ -19,6 +19,7 @@ plugin:
   checkpointDir: /var/lib/wh-dra/checkpoint
   pluginDir: /var/lib/kubelet/plugins/wormhole.tenstorrent.com
   registrarDir: /var/lib/kubelet/plugins_registry
+  fmAddr: ttfm-agent.ttfm.svc.cluster.local:50053
 
 nodeLabeler:
   interval: 5m
