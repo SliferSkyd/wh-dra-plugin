@@ -83,5 +83,4 @@ jobs:
         helm upgrade --install wh-dra-plugin ./helm/wh-dra-plugin \
           --namespace kube-system \
           --set image.repository=ghcr.io/${REPO} \
-          --set image.tag=sha-${SHA} \
-          --force
+          --set image.tag=sha-${SHA}
