@@ -1,0 +1,115 @@
+# Two independent vLLM instances — one per T3K node.
+# Each node runs a complete vLLM server independently (not distributed).
+#
+# Equivalent docker run:
+#   docker run --rm -it --privileged --network host --ipc host \
+#     -v /mnt/nvme0:/mnt/nvme0 -v /shared:/shared \
+#     -v /dev/hugepages-1G:/dev/hugepages-1G \
+#     -e MOREH_QWEN3_T3K_MODEL_ROOT=/shared/moreh-models \
+#     moreh-vllm:dev bash run serve qwen3 t3k-gsm8k-corr --no-lock
+---
+# Node A
+apiVersion: v1
+kind: Pod
+metadata:
+  name: moreh-vllm-qwen3-node-a
+  namespace: default
+  labels:
+    app: moreh-vllm-qwen3
+spec:
+  hostNetwork: true       # --network host: uses node IP directly, no ClusterIP
+  hostIPC: true           # --ipc host: shared memory with host
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: t3k-node-a
+
+  containers:
+  - name: vllm
+    image: moreh-vllm:dev
+    imagePullPolicy: Never  # local image, not in a registry
+    command:
+    - bash
+    - run
+    - serve
+    - qwen3
+    - t3k-gsm8k-corr
+    - --no-lock
+    env:
+    - name: MOREH_QWEN3_T3K_MODEL_ROOT
+      value: /shared/moreh-models
+    securityContext:
+      privileged: true    # --privileged: full access to /dev/tenstorrent
+    volumeMounts:
+    - name: nvme0
+      mountPath: /mnt/nvme0
+    - name: shared
+      mountPath: /shared
+    - name: hugepages
+      mountPath: /dev/hugepages-1G
+
+  volumes:
+  - name: nvme0
+    hostPath:
+      path: /mnt/nvme0
+      type: Directory
+  - name: shared
+    hostPath:
+      path: /shared
+      type: Directory
+  - name: hugepages
+    hostPath:
+      path: /dev/hugepages-1G
+      type: Directory
+---
+# Node B
+apiVersion: v1
+kind: Pod
+metadata:
+  name: moreh-vllm-qwen3-node-b
+  namespace: default
+  labels:
+    app: moreh-vllm-qwen3
+spec:
+  hostNetwork: true
+  hostIPC: true
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: t3k-node-b
+
+  containers:
+  - name: vllm
+    image: moreh-vllm:dev
+    imagePullPolicy: Never
+    command:
+    - bash
+    - run
+    - serve
+    - qwen3
+    - t3k-gsm8k-corr
+    - --no-lock
+    env:
+    - name: MOREH_QWEN3_T3K_MODEL_ROOT
+      value: /shared/moreh-models
+    securityContext:
+      privileged: true
+    volumeMounts:
+    - name: nvme0
+      mountPath: /mnt/nvme0
+    - name: shared
+      mountPath: /shared
+    - name: hugepages
+      mountPath: /dev/hugepages-1G
+
+  volumes:
+  - name: nvme0
+    hostPath:
+      path: /mnt/nvme0
+      type: Directory
+  - name: shared
+    hostPath:
+      path: /shared
+      type: Directory
+  - name: hugepages
+    hostPath:
+      path: /dev/hugepages-1G
+      type: Directory

@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ttfm.fullname" . }}-controller
+  labels:
+    {{- include "ttfm.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.controller.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ttfm.selectorLabels" . | nindent 6 }}
+      ttfm.tenstorrent.com/component: controller
+  template:
+    metadata:
+      {{- with .Values.controller.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "ttfm.selectorLabels" . | nindent 8 }}
+        ttfm.tenstorrent.com/component: controller
+    spec:
+      serviceAccountName: {{ include "ttfm.fullname" . }}
+      {{- with .Values.controller.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: config-volume
+          configMap:
+            name: {{ include "ttfm.fullname" . }}-controller
+        {{- include "ttfm.scaleoutConfigsVolume" . | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          {{- with .Values.controller.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: grpc
+              containerPort: 50052
+              protocol: TCP
+            {{- if .Values.controller.web.enabled }}
+            - name: http
+              containerPort: {{ .Values.controller.web.port }}
+              protocol: TCP
+            {{- end }}
+          command: 
+            - "tt-fabric-manager-controller"
+            - "--config"
+            - "/etc/fabric-manager/config.yaml"
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/fabric-manager
+              readOnly: true
+            - name: scaleout-configs
+              mountPath: /scaleout_configs
+              readOnly: true
+          {{- with .Values.controller.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.controller.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.controller.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.controller.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

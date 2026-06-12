@@ -1,0 +1,79 @@
+{{- if .Values.ingress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "ttfm.fullname" . }}
+  labels:
+    {{- include "ttfm.labels" . | nindent 4 }}
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- range .Values.ingress.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ttfm.fullname" $ }}-controller
+                port:
+                  name: grpc
+{{- end }}
+{{- if and .Values.ingress.ui.enabled .Values.controller.web.enabled }}
+---
+# Separate Ingress for the embedded web UI. Routed by its own hostname so it
+# serves plain HTTP (no backend-protocol: GRPC), while sharing the ingress
+# controller's external port with the gRPC ingress above.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "ttfm.fullname" . }}-ui
+  labels:
+    {{- include "ttfm.labels" . | nindent 4 }}
+  {{- with .Values.ingress.ui.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.ui.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.ui.tls }}
+  tls:
+    {{- range .Values.ingress.ui.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.ui.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ttfm.fullname" $ }}-controller-ui
+                port:
+                  name: http
+{{- end }}

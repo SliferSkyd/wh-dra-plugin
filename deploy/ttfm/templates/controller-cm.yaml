@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ttfm.fullname" . }}-controller
+  labels:
+    {{- include "ttfm.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    controller:
+      # That's fixed for the deployment
+      listen_address: 0.0.0.0:50052
+
+      # Heartbeat configuration
+      heartbeat_interval_sec: 10    # How often daemons send heartbeats
+      heartbeat_timeout_sec: 30     # When to mark daemon offline
+      daemon_reconnect_timeout_sec: 60  # Grace period for daemon reconnection
+
+      # Factory system descriptor path
+      {{- if .Values.controller.factorySystemDescriptorSearchPath }}
+      factory_system_descriptor_search_path: {{ .Values.controller.factorySystemDescriptorSearchPath | quote }}
+      {{- end }}
+      
+      {{- if .Values.controller.physicalGroupingDescriptorPath }}
+      physical_grouping_descriptor_path: {{ .Values.controller.physicalGroupingDescriptorPath | quote }}
+      {{- end }}
+
+      {{- if .Values.controller.web.enabled }}
+      # Embedded HTTP web UI / JSON API
+      http_listen_address: 0.0.0.0:{{ .Values.controller.web.port }}
+      {{- if .Values.controller.web.uiPath }}
+      web_ui_path: {{ .Values.controller.web.uiPath | quote }}
+      {{- end }}
+      {{- end }}
+
+    {{- if .Values.otel }}
+    otel:
+      enabled: {{ .Values.otel.enabled | default false }}
+      service_name: {{ .Values.otel.serviceName | default "tt-fabric-manager-controller" | quote }}
+      {{- if .Values.otel.deploymentEnvironment }}
+      deployment_environment: {{ .Values.otel.deploymentEnvironment | quote }}
+      {{- end }}
+      metric_export_interval_sec: {{ .Values.otel.metricExportIntervalSec | default 10 }}
+    {{- end }}

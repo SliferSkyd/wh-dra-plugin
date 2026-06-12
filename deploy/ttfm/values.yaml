@@ -1,0 +1,116 @@
+# Global container image for all components.
+image:
+  repository: ghcr.io/tenstorrent/tt-fabric-manager
+  pullPolicy: IfNotPresent
+
+# Pull secret(s) for the image registry. Empty by default; admins point
+# this at whichever secret already exists in the install namespace.
+# Site-specific defaults live in values.<site>.yaml.
+imagePullSecrets: []
+
+# Host directory containing scaleout configs (FSDs). Mounted read-only at
+# /scaleout_configs in both the controller and the agent pods. Override
+# when the cluster keeps FSDs somewhere other than /data/scaleout_configs.
+# Ignored when scaleoutConfigsImage is set.
+scaleoutConfigsHostPath: /data/scaleout_configs
+
+# OCI image whose filesystem provides the scaleout configs (FSDs). When set,
+# the image is mounted read-only at /scaleout_configs instead of the host
+# directory above, sourced as a Kubernetes image volume (requires the
+# ImageVolume feature, beta/on-by-default since Kubernetes 1.33, on by default
+# since Kubernetes 1.36). Pulls reuse the pod's imagePullSecrets via the service
+# account. e.g. ghcr.io/tenstorrent/tt-cluster-config/exabox:<tag>
+scaleoutConfigsImage: ""
+
+controller:
+  replicaCount: 1 # Beware, controller may be stateful
+  podAnnotations: {}
+  podLabels: {}
+  podSecurityContext: {}
+  securityContext: {}
+  resources: {}
+  readinessProbe:
+    exec:
+      command: ["grpc-health-probe", "-addr=:50052", "-connect-timeout=100ms", "-rpc-timeout=150ms"]
+    initialDelaySeconds: 5
+  affinity: {}
+  nodeSelector: {}
+  tolerations: []
+  # Embedded HTTP web UI / JSON API. When enabled the controller starts an
+  # HTTP server (separate from gRPC) that serves a topology UI at "/" and a
+  # JSON API at /api/*. Expose it via `ingress.ui` below. The endpoint is
+  # unauthenticated, so only expose it on trusted networks.
+  web:
+    enabled: false
+    # Container port the HTTP server binds to (internal; unrelated to the
+    # external ingress port).
+    port: 8080
+    # Directory of static UI assets inside the image. Matches the path the
+    # production Dockerfile copies controller/web to. Set to "" to serve only
+    # the JSON API with no static UI.
+    uiPath: /usr/local/share/tt-fabric-manager/web
+
+agent:
+  podAnnotations: {}
+  podLabels: {}
+  podSecurityContext: {}
+  securityContext: {}
+  resources: {}
+  # Schedule the agent on every Tenstorrent-equipped node. By default the
+  # DaemonSet matches the union of:
+  #   - tenstorrent.com/has-tt=true                                 (manually applied, e.g. via tt-ansible)
+  #   - feature.node.kubernetes.io/pci-1200_1e52.present=true       (auto-applied by NFD)
+  # Set `agent.affinity` to override the entire expression. The legacy
+  # `agent.nodeSelector` (below) still works, but ANDs with whatever
+  # affinity is in effect.
+  affinity: {}
+  livenessProbe:
+    exec:
+      command: ["grpc-health-probe", "-addr=:50053", "-connect-timeout=100ms", "-rpc-timeout=150ms"]
+    initialDelaySeconds: 5
+    periodSeconds: 5
+  readinessProbe:
+    exec:
+      command: ["grpc-health-probe", "-addr=:50053", "-connect-timeout=100ms", "-rpc-timeout=150ms"]
+    initialDelaySeconds: 5
+    periodSeconds: 5
+
+# OpenTelemetry exporter configuration for the controller.
+#
+# When enabled the controller emits OTEL logs/traces/metrics to stdout in
+# OStream/OTLP-style format; pair with a sidecar Collector or stdout scraping
+# until OTLP/gRPC export is wired (planned follow-up). Override standard OTEL_*
+# env vars in `controller.podAnnotations` / Pod env to override these values
+# at process start.
+otel:
+  enabled: false
+  serviceName: tt-fabric-manager-controller
+  deploymentEnvironment: ""
+  metricExportIntervalSec: 10
+
+# Optional ingress for the controller's external gRPC endpoint. Off by
+# default — admins enable + set hostname per their environment.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  tls: []
+    # - secretName: chart-example-tls
+    #   hosts:
+    #     - chart-example.local
+
+  # Optional ingress for the controller's embedded web UI (controller.web).
+  # Served as a SEPARATE Ingress object on its own hostname so it can use
+  # plain HTTP, while the gRPC ingress above keeps backend-protocol: GRPC.
+  # Both share the ingress controller's external port (80/443); routing is by
+  # Host header. Requires controller.web.enabled=true.
+  ui:
+    enabled: false
+    className: ""
+    annotations: {}
+    host: ""
+    tls: []
+      # - secretName: chart-example-ui-tls
+      #   hosts:
+      #     - ui.chart-example.local

@@ -1,0 +1,23 @@
+{{- if .Values.controller.web.enabled }}
+# Dedicated Service for the controller's embedded HTTP web UI / JSON API.
+# Kept separate from the gRPC Service so it does NOT inherit the
+# traefik.ingress.kubernetes.io/service.serversscheme: h2c annotation, which
+# would otherwise force HTTP/2 cleartext on the plain-HTTP web port when
+# traefik is the active ingress controller.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ttfm.fullname" . }}-controller-ui
+  labels:
+    {{- include "ttfm.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.controller.web.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "ttfm.selectorLabels" . | nindent 4 }}
+    ttfm.tenstorrent.com/component: controller
+{{- end }}

@@ -1,0 +1,324 @@
+# Headless Service — gives each pod a stable DNS name for peer discovery
+# DNS pattern: <pod-name>.<service-name>.<namespace>.svc.cluster.local
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-glm
+  namespace: default
+spec:
+  clusterIP: None       # headless — no load balancing, DNS only
+  selector:
+    app: vllm-glm
+  ports:
+  - name: api
+    port: 8000
+  - name: dist
+    port: 29500         # rendezvous port for torch.distributed / MPI
+---
+# External Service — exposes rank-0 HTTP API to clients outside the cluster
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-glm-api
+  namespace: default
+spec:
+  type: NodePort
+  selector:
+    app: vllm-glm
+    rank: "0"           # only routes to rank-0 pod
+  ports:
+  - name: api
+    port: 8000
+    targetPort: 8000
+    nodePort: 30800     # accessible at <any-node-ip>:30800
+---
+# rank-0 — pinned to server A
+# This pod also serves the HTTP API (port 8000)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vllm-glm-0
+  namespace: default
+  labels:
+    app: vllm-glm
+    rank: "0"
+spec:
+  hostname: vllm-glm-0
+  subdomain: vllm-glm   # must match headless Service name for DNS to work
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: t3k-node-a   # pin to specific server
+  containers:
+  - name: vllm
+    image: ghcr.io/moreh/vllm-tenstorrent:latest
+    imagePullPolicy: Always
+    command:
+    - python
+    - -m
+    - vllm.entrypoints.openai.api_server
+    args:
+    - --model
+    - /models/GLM-5.1
+    - --port
+    - "8000"
+    - --tensor-parallel-size
+    - "8"               # TP across 8 chips within this server
+    - --pipeline-parallel-size
+    - "4"               # PP across 4 servers
+    env:
+    - name: RANK
+      value: "0"
+    - name: WORLD_SIZE
+      value: "4"
+    - name: MASTER_ADDR
+      value: "vllm-glm-0.vllm-glm.default.svc.cluster.local"
+    - name: MASTER_PORT
+      value: "29500"
+    securityContext:
+      privileged: true  # required to access /dev/tenstorrent without DRA
+    ports:
+    - containerPort: 8000
+      name: api
+    - containerPort: 29500
+      name: dist
+    volumeMounts:
+    - name: dev-tenstorrent
+      mountPath: /dev/tenstorrent
+    - name: tt-logs
+      mountPath: /tmp/tt_logs
+    - name: model-storage
+      mountPath: /models
+    resources:
+      limits:
+        memory: "128Gi"
+      requests:
+        memory: "128Gi"
+  volumes:
+  - name: dev-tenstorrent
+    hostPath:
+      path: /dev/tenstorrent
+      type: Directory
+  - name: tt-logs
+    hostPath:
+      path: /tmp/tt_logs
+      type: DirectoryOrCreate
+  - name: model-storage
+    hostPath:
+      path: /data/models  # model weights must be pre-copied to each node
+      type: Directory
+---
+# rank-1 — pinned to server B
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vllm-glm-1
+  namespace: default
+  labels:
+    app: vllm-glm
+    rank: "1"
+spec:
+  hostname: vllm-glm-1
+  subdomain: vllm-glm
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: t3k-node-b
+  containers:
+  - name: vllm
+    image: ghcr.io/moreh/vllm-tenstorrent:latest
+    imagePullPolicy: Always
+    command:
+    - python
+    - -m
+    - vllm.entrypoints.openai.api_server
+    args:
+    - --model
+    - /models/GLM-5.1
+    - --port
+    - "8000"
+    - --tensor-parallel-size
+    - "8"
+    - --pipeline-parallel-size
+    - "4"
+    env:
+    - name: RANK
+      value: "1"
+    - name: WORLD_SIZE
+      value: "4"
+    - name: MASTER_ADDR
+      value: "vllm-glm-0.vllm-glm.default.svc.cluster.local"
+    - name: MASTER_PORT
+      value: "29500"
+    securityContext:
+      privileged: true
+    ports:
+    - containerPort: 29500
+      name: dist
+    volumeMounts:
+    - name: dev-tenstorrent
+      mountPath: /dev/tenstorrent
+    - name: tt-logs
+      mountPath: /tmp/tt_logs
+    - name: model-storage
+      mountPath: /models
+    resources:
+      limits:
+        memory: "128Gi"
+      requests:
+        memory: "128Gi"
+  volumes:
+  - name: dev-tenstorrent
+    hostPath:
+      path: /dev/tenstorrent
+      type: Directory
+  - name: tt-logs
+    hostPath:
+      path: /tmp/tt_logs
+      type: DirectoryOrCreate
+  - name: model-storage
+    hostPath:
+      path: /data/models
+      type: Directory
+---
+# rank-2 — pinned to server C
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vllm-glm-2
+  namespace: default
+  labels:
+    app: vllm-glm
+    rank: "2"
+spec:
+  hostname: vllm-glm-2
+  subdomain: vllm-glm
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: t3k-node-c
+  containers:
+  - name: vllm
+    image: ghcr.io/moreh/vllm-tenstorrent:latest
+    imagePullPolicy: Always
+    command:
+    - python
+    - -m
+    - vllm.entrypoints.openai.api_server
+    args:
+    - --model
+    - /models/GLM-5.1
+    - --port
+    - "8000"
+    - --tensor-parallel-size
+    - "8"
+    - --pipeline-parallel-size
+    - "4"
+    env:
+    - name: RANK
+      value: "2"
+    - name: WORLD_SIZE
+      value: "4"
+    - name: MASTER_ADDR
+      value: "vllm-glm-0.vllm-glm.default.svc.cluster.local"
+    - name: MASTER_PORT
+      value: "29500"
+    securityContext:
+      privileged: true
+    ports:
+    - containerPort: 29500
+      name: dist
+    volumeMounts:
+    - name: dev-tenstorrent
+      mountPath: /dev/tenstorrent
+    - name: tt-logs
+      mountPath: /tmp/tt_logs
+    - name: model-storage
+      mountPath: /models
+    resources:
+      limits:
+        memory: "128Gi"
+      requests:
+        memory: "128Gi"
+  volumes:
+  - name: dev-tenstorrent
+    hostPath:
+      path: /dev/tenstorrent
+      type: Directory
+  - name: tt-logs
+    hostPath:
+      path: /tmp/tt_logs
+      type: DirectoryOrCreate
+  - name: model-storage
+    hostPath:
+      path: /data/models
+      type: Directory
+---
+# rank-3 — pinned to server D
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vllm-glm-3
+  namespace: default
+  labels:
+    app: vllm-glm
+    rank: "3"
+spec:
+  hostname: vllm-glm-3
+  subdomain: vllm-glm
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: t3k-node-d
+  containers:
+  - name: vllm
+    image: ghcr.io/moreh/vllm-tenstorrent:latest
+    imagePullPolicy: Always
+    command:
+    - python
+    - -m
+    - vllm.entrypoints.openai.api_server
+    args:
+    - --model
+    - /models/GLM-5.1
+    - --port
+    - "8000"
+    - --tensor-parallel-size
+    - "8"
+    - --pipeline-parallel-size
+    - "4"
+    env:
+    - name: RANK
+      value: "3"
+    - name: WORLD_SIZE
+      value: "4"
+    - name: MASTER_ADDR
+      value: "vllm-glm-0.vllm-glm.default.svc.cluster.local"
+    - name: MASTER_PORT
+      value: "29500"
+    securityContext:
+      privileged: true
+    ports:
+    - containerPort: 29500
+      name: dist
+    volumeMounts:
+    - name: dev-tenstorrent
+      mountPath: /dev/tenstorrent
+    - name: tt-logs
+      mountPath: /tmp/tt_logs
+    - name: model-storage
+      mountPath: /models
+    resources:
+      limits:
+        memory: "128Gi"
+      requests:
+        memory: "128Gi"
+  volumes:
+  - name: dev-tenstorrent
+    hostPath:
+      path: /dev/tenstorrent
+      type: Directory
+  - name: tt-logs
+    hostPath:
+      path: /tmp/tt_logs
+      type: DirectoryOrCreate
+  - name: model-storage
+    hostPath:
+      path: /data/models
+      type: Directory

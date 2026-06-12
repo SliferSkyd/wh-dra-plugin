@@ -1,0 +1,114 @@
+# DaemonSet for agent pods
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "ttfm.fullname" . }}-agent
+  labels:
+    {{- include "ttfm.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "ttfm.selectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 100
+  template:
+    metadata:
+      {{- with .Values.agent.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "ttfm.labels" . | nindent 8 }}
+        ttfm.tenstorrent.com/component: agent
+        {{- with .Values.agent.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      volumes:
+      - name: config-volume
+        configMap:
+          name: {{ include "ttfm.fullname" . }}-agent
+      {{- include "ttfm.scaleoutConfigsVolume" . | nindent 6 }}
+      {{- with .Values.agent.extraVolumes }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+      affinity:
+        {{- if .Values.agent.affinity }}
+        {{- toYaml .Values.agent.affinity | nindent 8 }}
+        {{- else }}
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: tenstorrent.com/has-tt
+                    operator: In
+                    values: ["true"]
+              - matchExpressions:
+                  - key: feature.node.kubernetes.io/pci-1200_1e52.present
+                    operator: In
+                    values: ["true"]
+        {{- end }}
+      serviceAccountName: {{ include "ttfm.fullname" . }}
+      {{- with .Values.agent.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}-agent
+          securityContext:
+            privileged: true
+            {{- with .Values.agent.securityContext }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: grpc
+              containerPort: 50053
+              protocol: TCP
+          command:
+            - "tt-fabric-manager-agent"
+            - "--host-id"
+            - "$(HOST_ID)"
+            - "--advertise-address"
+            - "$(POD_IP):50053"
+            {{- with .Values.agent.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          env:
+            - name: HOST_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          {{- with .Values.agent.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.agent.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/fabric-manager
+              readOnly: true
+            - name: scaleout-configs
+              mountPath: /scaleout_configs
+              readOnly: true
+            {{- with .Values.agent.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      {{- with .Values.agent.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.agent.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

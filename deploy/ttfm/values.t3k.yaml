@@ -1,0 +1,64 @@
+# Fabric Manager values tailored for the T3K Kubernetes cluster
+# (control-plane-01 + t3k-node-a / t3k-node-b).
+#
+# Differences from values.exabox.yaml:
+#   * Agent is scheduled by the cluster's existing label
+#     `tenstorrent.com/arch=wormhole` (set by wh-node-labeler), NOT the chart's
+#     default `tenstorrent.com/has-tt` / NFD PCI label — those are not present
+#     on this cluster.
+#   * No Factory System Descriptor (no golden-state validation) and no Physical
+#     Grouping Descriptor — the controller runs in plain discovery mode, exactly
+#     like the standalone Docker test. scaleout-configs is pointed at /tmp so the
+#     (unused) hostPath mount can never block pod startup.
+#   * Web UI / JSON API enabled (the "monitor"), but ingress is OFF — reach it
+#     via `kubectl port-forward` since the endpoint is unauthenticated.
+#
+# Install (from your deploy host, with kubeconfig pointed at the cluster):
+#   kubectl create namespace ttfm
+#   helm -n ttfm upgrade --install ttfm \
+#     -f deploy/ttfm/values.t3k.yaml deploy/ttfm
+#
+# Watch it work:
+#   kubectl -n ttfm get pods -o wide          # controller + one agent per T3K node
+#   kubectl -n ttfm logs ds/ttfm-agent        # per-node discovery
+#   kubectl -n ttfm port-forward svc/ttfm-controller-ui 8080:8080
+#   # then open http://localhost:8080  (topology UI + /api/topology-summary)
+
+image:
+  repository: ghcr.io/tenstorrent/tt-fabric-manager
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: ghcr-credentials
+
+# No FSD image; point the (unused) host mount at a path that always exists.
+scaleoutConfigsImage: ""
+scaleoutConfigsHostPath: /tmp
+
+controller:
+  replicaCount: 1
+  # Leave factorySystemDescriptorSearchPath and physicalGroupingDescriptorPath
+  # unset: no golden state, plain discovery mode.
+  web:
+    enabled: true
+    port: 8080
+    uiPath: /usr/local/share/tt-fabric-manager/web
+
+agent:
+  # Override the chart's default node match: run the agent on the same nodes the
+  # wh-dra-plugin already targets.
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: tenstorrent.com/arch
+                operator: In
+                values: ["wormhole"]
+
+# UI/gRPC ingress off — use port-forward. The web UI is unauthenticated, so do
+# not expose it without an authenticating proxy in front.
+ingress:
+  enabled: false
+  ui:
+    enabled: false

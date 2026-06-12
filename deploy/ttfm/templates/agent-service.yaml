@@ -1,0 +1,25 @@
+# Headless-by-policy Service that fronts the per-node Tenstorrent Fabric
+# Manager agent DaemonSet. `internalTrafficPolicy: Local` makes kube-proxy
+# only route to a backing endpoint that lives on the *same* node as the
+# client pod, which is exactly what node-local consumers (e.g. a DRA
+# driver kubelet plugin) need: each pod must talk to its own node's
+# agent, never a peer's. Requests originating on nodes that have no
+# agent pod will fail to connect, which surfaces misconfiguration loudly
+# instead of silently routing to the wrong host.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ttfm.fullname" . }}-agent
+  labels:
+    {{- include "ttfm.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  internalTrafficPolicy: Local
+  ports:
+    - port: 50053
+      targetPort: grpc
+      protocol: TCP
+      name: grpc
+  selector:
+    {{- include "ttfm.selectorLabels" . | nindent 4 }}
+    ttfm.tenstorrent.com/component: agent

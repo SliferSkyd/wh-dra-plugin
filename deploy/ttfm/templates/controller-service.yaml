@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ttfm.fullname" . }}-controller
+  annotations:
+    traefik.ingress.kubernetes.io/service.serversscheme: h2c
+  labels:
+    {{- include "ttfm.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 50052
+      targetPort: grpc
+      protocol: TCP
+      name: grpc
+  selector:
+    {{- include "ttfm.selectorLabels" . | nindent 4 }}
+    ttfm.tenstorrent.com/component: controller

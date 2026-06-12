@@ -360,6 +360,45 @@ kubectl delete -f deploy/multinode/test-mpi-two-t3k.yaml
 
 ---
 
+## tt-fabric-manager (optional)
+
+The Helm chart for the fabric manager is bundled at `deploy/ttfm/`. It deploys
+one controller pod on the control plane and one agent pod per T3K node.
+
+```bash
+# First time only:
+kubectl create namespace ttfm
+
+# Install or upgrade:
+helm -n ttfm upgrade --install ttfm \
+  -f deploy/ttfm/values.t3k.yaml \
+  deploy/ttfm
+```
+
+Verify:
+```bash
+kubectl -n ttfm get pods -o wide
+# Expected: 1 controller + 1 agent per T3K node (t3k-node-a, t3k-node-b)
+
+kubectl -n ttfm logs daemonset/ttfm-agent -f
+```
+
+Web UI (topology diagram + `/api/topology-summary`):
+```bash
+kubectl -n ttfm port-forward svc/ttfm-controller-ui 8080:8080
+# open http://localhost:8080
+```
+
+Once agents are up, test topology export from inside the plugin pod:
+```bash
+PLUGIN_POD=$(kubectl -n kube-system get pods -l app=wh-dra-kubelet-plugin \
+  -o jsonpath='{.items[0].metadata.name}')
+kubectl -n kube-system exec -it $PLUGIN_POD -- \
+  wh-topology-export -addr ttfm-agent.ttfm.svc.cluster.local:50053 -stdout
+```
+
+---
+
 ## Odin / InferenceService templates
 
 These are for production inference deployments via the Odin operator (MoAI Inference Framework).
