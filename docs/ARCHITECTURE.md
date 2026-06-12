@@ -17,83 +17,84 @@ idea, expanded.
 |---|---|---|---|
 | kube-apiserver + etcd | `kube-system` | control-plane-01 | source of truth for ResourceSlice / ResourceClaim / DeviceClass / node labels |
 | kube-scheduler (DRA structured parameters) | `kube-system` | control-plane-01 | matches claims to nodes; pure metadata, never touches a chip |
-| **fm controller** (Deployment) | `ttfm` | control-plane-01 | aggregates topology from all agents; serves web UI + JSON API on `:8080`; receives agent heartbeats on `:50051/52` |
+| **tt-fabric-manager controller** (Deployment) | `ttfm` | control-plane-01 | aggregates per-node topology from all agents; serves web UI + JSON API on `:8080`; receives agent registrations + heartbeats on `:50052` |
 | **wh-dra-kubelet-plugin** (DaemonSet) | `kube-system` | every T3K node | enumerates devices, publishes ResourceSlice, injects devices via CDI |
 | **wh-node-labeler** (DaemonSet) | `kube-system` | every T3K node | runs `tt-smi`, writes node labels consumed by the scheduler / DeviceClass |
-| **fm agent** (DaemonSet) | `ttfm` | every T3K node | UMD ethernet-mesh discovery; reports topology to controller; exposes `AgentService` gRPC on `:50053` |
+| **tt-fabric-manager agent** (DaemonSet) | `ttfm` | every T3K node | UMD ethernet-mesh discovery; reports per-node topology to controller; exposes `AgentService` gRPC on `:50053` |
 | tt-kmd + `/dev/tenstorrent` + hugepages | — | every T3K node | kernel/driver layer the chips are reached through |
 | workload pod (vLLM / tt-metal) | workload ns | T3K node (scheduled) | gets `/dev/tenstorrent/N` + hugepages injected via CDI |
 | `wh-device-probe` (binary in plugin image) | — | exec into plugin pod | busy-safe chip enumeration from `/dev` + `/sys` |
 | `wh-topology-export` (binary in plugin image) | — | exec into plugin pod | calls `AgentService.GetTopology` via K8s service, dumps full topology |
 
-Nothing hardware-facing runs on the control plane. The kubelet plugin and FM
-agent are both pinned to T3K nodes by
-`nodeAffinity: tenstorrent.com/arch=wormhole`. The FM controller is the only
-component that runs on the control plane, and it never touches a chip directly.
+Nothing hardware-facing runs on the control plane. The kubelet plugin and
+tt-fabric-manager agent are both pinned to T3K nodes by
+`nodeAffinity: tenstorrent.com/arch=wormhole`. The tt-fabric-manager controller
+is the only FM component on the control plane and never touches a chip directly.
 
 ---
 
 ## 2. Topology diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  control-plane-01  (192.168.1.60)            no Tenstorrent hardware         │
-│                                                                               │
-│  ┌──────────────────┐  ┌─────────────────┐  ┌──────────────────────────────┐ │
-│  │  kube-apiserver  │  │  kube-scheduler │  │  fm-controller  [ttfm ns]   │ │
-│  │  + etcd          │  │  DRA structured │  │                              │ │
-│  │                  │  │  parameters     │  │  • aggregates agent reports  │ │
-│  │  ResourceSlice   │◄─┤                 │  │  • cluster-wide topology     │ │
-│  │  ResourceClaim   │  │  claim ↔ slice  │  │  • web UI :8080              │ │
-│  │  DeviceClass     │  │  allocate+bind  │  │  • gRPC :50051/52            │ │
-│  │  Node labels     │  └─────────────────┘  └──────────────▲───────────────┘ │
-│  └──────▲───────────┘                                       │ register +      │
-│         │                                                    │ heartbeat       │
-│         │  GHA self-hosted runner                           │ (K8s svc)       │
-│         │  helm upgrade → rolls DaemonSets                  │                 │
-└─────────┼────────────────────────────────────────────────────┼────────────────┘
-          │  HTTPS :6443                                        │ TCP :50051/52
-══════════╪════════════════════ same K8s cluster ══════════════╪════════════════
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  control-plane-01  (192.168.1.60)              no Tenstorrent hardware           │
+│                                                                                   │
+│  ┌──────────────────┐  ┌─────────────────┐  ┌────────────────────────────────┐   │
+│  │  kube-apiserver  │  │  kube-scheduler │  │  TT-FABRIC-MANAGER CONTROLLER  │   │
+│  │  + etcd          │  │  DRA structured │  │  [ttfm namespace]              │   │
+│  │                  │  │  parameters     │  │                                │   │
+│  │  ResourceSlice   │◄─┤                 │  │  • aggregates per-node reports │   │
+│  │  ResourceClaim   │  │  claim ↔ slice  │  │  • cluster-wide topology view  │   │
+│  │  DeviceClass     │  │  allocate+bind  │  │  • web UI + JSON API  :8080    │   │
+│  │  Node labels     │  └─────────────────┘  │  • agent gRPC listener :50052  │   │
+│  └──────▲───────────┘                        └──────────────▲─────────────────┘   │
+│         │                                                    │ register +          │
+│         │  GHA self-hosted runner                           │ heartbeat stream    │
+│         │  helm upgrade → rolls DaemonSets                  │ (K8s ClusterIP svc) │
+└─────────┼────────────────────────────────────────────────────┼────────────────────┘
+          │  HTTPS :6443                                        │ TCP :50052
+══════════╪════════════════════ same K8s cluster ══════════════╪════════════════════
           │                                                     │
-┌─────────┼─────────────────────────────────────────────────────┼──────────────┐
-│  t3k-node-a  (label: tenstorrent.com/arch=wormhole)            │  ×N nodes    │
-│         │                                                     │              │
-│  ┌──────┴──────────────────────────────────────────────────┐  │              │
-│  │  kubelet                                                 │  │              │
-│  └──────▲──────────────▲────────────────────────────────────┘  │              │
-│         │ register     │ NodePrepareResources / CDI             │              │
-│         │ DRA plugin   │                                        │              │
-│  ┌──────┴──────────────┴───────┐  ┌──────────────────────┐     │              │
-│  │  wh-dra-kubelet-plugin      │  │  wh-node-labeler     │     │              │
-│  │  [kube-system]              │  │  [kube-system]       │     │              │
-│  │  • enumerate /dev + /sys    │  │  • tt-smi → labels   │─────┼──► apiserver │
-│  │  • publish ResourceSlice    │  │    arch, board, rank  │     │   HTTPS      │
-│  │  • NodePrepare: CDI inject  │  └──────────────────────┘     │              │
-│  │    /dev/tenstorrent/N                                        │              │
-│  │    + hugepages              │  ┌──────────────────────┐     │              │
-│  │                             │  │  fm-agent  [ttfm]    │─────┼──► controller│
-│  │  wh-device-probe (tool)     │  │  • UMD mesh discovery│     │   via K8s    │
-│  │  • reads /dev + /sys        │  │  • AgentService gRPC │     │   service    │
-│  │  • busy-safe, no FM needed  │  │    :50053 (pod IP)   │     │   TCP        │
-│  │                             │  └──────────▲───────────┘     │              │
-│  │  wh-topology-export (tool)  │             │ UMD mmap BAR0   │              │
-│  │  • dials ttfm-agent svc     │─────────────┘ (fails busy)    │              │
-│  │    :50053 (local node only) │                                │              │
-│  └─────────────────────────────┘                                │              │
-│                                                                  │              │
-│  ┌──────────────────────────────────────────────────────────┐   │              │
-│  │  KERNEL / DRIVER LAYER                                    │   │              │
-│  │  tt-kmd → /dev/tenstorrent/{0..N}, by-id/, /sys/class    │   │              │
-│  │  hugepages (1G)                                           │   │              │
-│  └──────────────────────▲───────────────────────────────────┘   │              │
-│                          │ char-dev injection at container start  │              │
-│  ┌───────────────────────┴───────────────────────────────────┐   │              │
-│  │  WORKLOAD POD  (vLLM / tt-metal)                          │   │              │
-│  │  • /dev/tenstorrent/N + /dev/hugepages-1G injected by CDI │   │              │
-│  │  • TT_MESH_HOST_RANK, TT_CHIP_COUNT, etc. from labels     │   │              │
-│  │  • chip↔chip over TT ethernet mesh                        │   │              │
-│  └───────────────────────────────────────────────────────────┘   │              │
-└──────────────────────────────────────────────────────────────────────────────┘
+┌─────────┼─────────────────────────────────────────────────────┼────────────────┐
+│  t3k-node-a  (label: tenstorrent.com/arch=wormhole)            │    ×N nodes    │
+│         │                                                     │                │
+│  ┌──────┴──────────────────────────────────────────────────┐  │                │
+│  │  kubelet                                                 │  │                │
+│  └──────▲──────────────▲────────────────────────────────────┘  │                │
+│         │ register     │ NodePrepareResources / CDI             │                │
+│         │ DRA plugin   │                                        │                │
+│  ┌──────┴──────────────┴───────┐  ┌──────────────────────┐     │                │
+│  │  wh-dra-kubelet-plugin      │  │  wh-node-labeler     │     │                │
+│  │  [kube-system]              │  │  [kube-system]       │     │                │
+│  │  • enumerate /dev + /sys    │  │  • tt-smi → labels   │─────┼──► apiserver   │
+│  │  • publish ResourceSlice    │  │    arch, board, rank  │     │   HTTPS        │
+│  │  • NodePrepare: CDI inject  │  └──────────────────────┘     │                │
+│  │    /dev/tenstorrent/N       │                                │                │
+│  │    + hugepages              │  ┌──────────────────────────┐  │                │
+│  │                             │  │  TT-FABRIC-MANAGER AGENT  │  │                │
+│  │  wh-device-probe (tool)     │  │  [ttfm namespace]         │──┼──► controller  │
+│  │  • reads /dev + /sys        │  │  • UMD ethernet discovery │  │   TCP :50052   │
+│  │  • busy-safe, no FM needed  │  │  • AgentService gRPC      │  │   (K8s svc)    │
+│  │                             │  │    :50053 (pod IP)        │  │                │
+│  │  wh-topology-export (tool)  │  └──────────▲───────────────┘  │                │
+│  │  • dials ttfm-agent svc     │─────────────┘ UMD mmap BAR0    │                │
+│  │    :50053 internalTraffic   │               (falls back if    │                │
+│  │    Policy:Local → same node │               chips busy)       │                │
+│  └─────────────────────────────┘                                 │                │
+│                                                                   │                │
+│  ┌───────────────────────────────────────────────────────────┐   │                │
+│  │  KERNEL / DRIVER LAYER                                     │   │                │
+│  │  tt-kmd → /dev/tenstorrent/{0..N}, by-id/, /sys/class     │   │                │
+│  │  hugepages (1G)                                            │   │                │
+│  └──────────────────────▲────────────────────────────────────┘   │                │
+│                          │ char-dev injection at container start   │                │
+│  ┌───────────────────────┴────────────────────────────────────┐   │                │
+│  │  WORKLOAD POD  (vLLM / tt-metal)                           │   │                │
+│  │  • /dev/tenstorrent/N + /dev/hugepages-1G injected by CDI  │   │                │
+│  │  • TT_MESH_HOST_RANK, TT_CHIP_COUNT, etc. from labels      │   │                │
+│  │  • chip↔chip over TT ethernet mesh                         │   │                │
+│  └────────────────────────────────────────────────────────────┘   │                │
+└────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 For a 2-node deployment both `t3k-node-a` and `t3k-node-b` run identical
@@ -114,8 +115,8 @@ host-to-host MPI uses `TT_ETHERNET_IFACE`.
 | scheduler ↔ apiserver | watch / list / bind | **HTTPS** :6443 | TLS + RBAC |
 | plugin → CDI | writes CDI spec JSON files | filesystem `/var/run/cdi` | — |
 | kubelet → containerd | CRI gRPC; runtime reads CDI, injects device nodes | **UDS** (CRI socket) | filesystem perms |
-| FM agent → FM controller | gRPC register + heartbeat stream | **TCP** via K8s service `ttfm-controller.ttfm:50052` | plaintext |
-| wh-topology-export → FM agent | gRPC `AgentService.GetTopology` | **TCP** `ttfm-agent.ttfm.svc.cluster.local:50053` (`internalTrafficPolicy: Local` → routes to same-node agent only) | plaintext |
+| tt-fabric-manager agent → tt-fabric-manager controller | gRPC register + heartbeat stream | **TCP** via K8s service `ttfm-controller.ttfm:50052` | plaintext |
+| wh-topology-export → tt-fabric-manager agent | gRPC `AgentService.GetTopology` | **TCP** `ttfm-agent.ttfm.svc.cluster.local:50053` (`internalTrafficPolicy: Local` → routes to same-node agent only) | plaintext |
 | plugin / wh-device-probe → kernel | `stat()` + sysfs reads | syscalls (no network) | root in container |
 | UMD / tt-smi / FM agent → chips | `mmap` BAR0 + ioctl | char dev `/dev/tenstorrent/N` | device perms |
 | workload pod → chips | UMD mmap of injected char devs + hugepages | `/dev/tenstorrent/N`, `/dev/hugepages-1G` | CDI-injected |
@@ -126,14 +127,14 @@ host-to-host MPI uses `TT_ETHERNET_IFACE`.
 - **Inside a node, almost nothing is networked.** plugin↔kubelet and
   kubelet↔runtime are Unix domain sockets; the device hand-off is files (CDI
   JSON) + char-device injection — not RPC.
-- **FM agent does not use hostNetwork.** It binds `:50053` on its pod IP, not
-  the host IP. `localhost:50053` from inside another pod or from the host
-  itself will not reach it — always use the K8s service name.
+- **tt-fabric-manager agent does not use hostNetwork.** It binds `:50053` on
+  its pod IP, not the host IP. `localhost:50053` from inside another pod or
+  from the host itself will not reach it — always use the K8s service name.
 - **`internalTrafficPolicy: Local`** on the `ttfm-agent` service ensures each
   caller is routed to the agent on its own node. A pod on `t3k-node-a` always
   hits the agent on `t3k-node-a`, never `t3k-node-b`.
-- **FM gRPC is plaintext and unauthenticated.** Fine within the cluster
-  network, but do not expose it outside without mTLS or a NetworkPolicy.
+- **tt-fabric-manager gRPC is plaintext and unauthenticated.** Fine within the
+  cluster network, but do not expose it outside without mTLS or a NetworkPolicy.
 
 ---
 
@@ -213,19 +214,19 @@ Phases 2–3 and 5 repeat per pod.
 
 ---
 
-## 5. The fabric-manager topology loop
+## 5. The tt-fabric-manager topology loop
 
-The FM loop runs independently of the DRA allocation path. It provides
-cluster-wide topology visibility and link health — but DRA allocation works
-even if FM is down.
+The tt-fabric-manager loop runs independently of the DRA allocation path. It
+provides cluster-wide topology visibility and link health — but DRA allocation
+works even if tt-fabric-manager is down.
 
 ```
-fm-agent (pod IP :50053)
+tt-fabric-manager agent (pod IP :50053)
     │
     ├──UMD mmap BAR0──► chips          ethernet-mesh discovery
     │                                  (fails if chips busy — returns empty mesh)
     │
-    └──gRPC TCP──► ttfm-controller K8s svc ──► fm-controller :50052
+    └──gRPC TCP──► ttfm-controller K8s svc ──► tt-fabric-manager controller :50052
                    register + heartbeat stream
                    controller aggregates → cluster-wide view + web UI
 
@@ -241,10 +242,11 @@ wh-topology-export (exec in plugin pod)
 - **`exit_nodes`** — inter-node links (which chip connects to which remote chip)
 - **`cluster_descriptor_yaml`** — UMD cluster descriptor consumed by tt-metal
 
-These three fields are populated only when the agent ran UMD discovery on idle
-hardware. While chips are busy the agent falls back to PCIe-only enumeration
-and those fields come back empty. Run `wh-topology-export` before launching a
-workload, or use `-rediscover` to force a fresh scan.
+These three fields are populated only when the tt-fabric-manager agent ran UMD
+discovery on idle hardware. While chips are busy the agent falls back to
+PCIe-only enumeration and those fields come back empty. Run
+`wh-topology-export` before launching a workload, or use `-rediscover` to force
+a fresh scan.
 
 ---
 
@@ -355,6 +357,20 @@ kubectl -n ttfm port-forward svc/ttfm-controller-ui 8080:8080
 # http://localhost:8080 → topology diagram + /api/topology-summary
 ```
 
+### Cluster networking prerequisite (Proxmox / hypervisor firewall)
+
+Calico VXLAN uses **UDP port 4789** for all cross-node pod traffic. If a VM-level
+firewall (e.g. a Proxmox security group) is attached to any worker-node VM and
+does not explicitly allow UDP 4789 inbound, pod-to-pod communication from that
+node silently breaks:
+
+- `kubectl exec` and `kubectl logs` on pods scheduled there will hang
+- The FM agent will crash-loop with DNS resolution failures
+- ICMP (ping) between hosts still works, masking the problem
+
+**Fix:** disable the VM-level firewall for cluster nodes, or add an inbound ACCEPT
+rule for UDP 4789 from the cluster subnet (e.g. `192.168.1.0/24`).
+
 ### Ports
 
 | Component | Port | Exposed as | Reachable from |
@@ -415,5 +431,5 @@ Job 2: deploy  (self-hosted runner on control-plane-01)
 | Component | Registry | Updated by |
 |---|---|---|
 | `wh-dra-kubelet-plugin` + `wh-node-labeler` | `ghcr.io/slifersky/wh-dra-plugin:sha-…` | CI on every `main` push |
-| `fm-agent` + `fm-controller` | `ghcr.io/tenstorrent/tt-fabric-manager:latest` | manual `helm upgrade` (separate repo) |
+| tt-fabric-manager agent + controller | `ghcr.io/tenstorrent/tt-fabric-manager:latest` | manual `helm upgrade` (separate repo) |
 | `moreh-vllm` (workload) | `192.168.1.60:5000/moreh-vllm:dev` | manual `docker build && push` |

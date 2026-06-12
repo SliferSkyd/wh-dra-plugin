@@ -389,6 +389,15 @@ kubectl -n ttfm port-forward svc/ttfm-controller-ui 8080:8080
 # open http://localhost:8080
 ```
 
+**Prerequisite — Proxmox VM firewall:** If any worker node VM has a Proxmox firewall
+security group attached, ensure UDP port 4789 (VXLAN/Calico) is allowed inbound from
+all other cluster nodes. A VM-level firewall that blocks UDP 4789 silently breaks
+pod-to-pod networking on that node — the FM agent will crash-loop with DNS failures and
+`kubectl exec` / `kubectl logs` on pods scheduled there will hang.
+
+To check: Proxmox web UI → VM → Firewall tab. If a security group is enabled, add:
+- Direction: IN, Action: ACCEPT, Protocol: UDP, Dest. port: 4789, Source: `<cluster-subnet>`
+
 Once agents are up, test topology export from inside the plugin pod:
 ```bash
 PLUGIN_POD=$(kubectl -n kube-system get pods -l app=wh-dra-kubelet-plugin \
