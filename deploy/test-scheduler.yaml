@@ -67,13 +67,6 @@ spec:
       resourceClaims:
       - name: t3k
         resourceClaimTemplateName: t3k-scheduler-test-claim
-      affinity:
-        podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-          - topologyKey: kubernetes.io/hostname
-            labelSelector:
-              matchLabels:
-                job-name: t3k-scheduler-test
       containers:
       - name: test
         image: ubuntu:22.04
