@@ -245,7 +245,7 @@ spec:
           selectors:
           - cel:
               expression: >
-                device.attributes["tenstorrent.com/physical_pod"].string == "t3k-pod-0"
+                device.attributes["tenstorrent.com"]["physical_pod"] == "t3k-pod-0"
 ```
 
 The CEL selector ensures both pods can only land on nodes in the `t3k-pod-0` physical pod —

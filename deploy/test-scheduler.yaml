@@ -29,7 +29,7 @@ spec:
           selectors:
           - cel:
               expression: >
-                device.attributes["tenstorrent.com/physical_pod"].string == "t3k-pod-0"
+                device.attributes["tenstorrent.com"]["physical_pod"] == "t3k-pod-0"
 ---
 apiVersion: batch/v1
 kind: Job
