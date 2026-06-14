@@ -102,7 +102,8 @@ func (p *Profile) EnumerateDevices(ctx context.Context) (resourceslice.DriverRes
 	return resourceslice.DriverResources{
 		Pools: map[string]resourceslice.Pool{
 			p.poolName(): {
-				Slices: []resourceslice.Slice{{Devices: []resourceapi.Device{device}}},
+				TotalSliceCount: p.poolTotalSliceCount(),
+				Slices:          []resourceslice.Slice{{Devices: []resourceapi.Device{device}}},
 			},
 		},
 	}, nil
@@ -251,6 +252,17 @@ func (p *Profile) poolName() string {
 		return p.physicalPod
 	}
 	return p.nodeName
+}
+
+// poolTotalSliceCount returns the total number of slices the scheduler should
+// expect for this pool. Non-zero for multi-node pools so the scheduler knows
+// all podSize nodes contribute a device and doesn't exhaust the pool after the
+// first allocation.
+func (p *Profile) poolTotalSliceCount() int64 {
+	if p.podSize > 1 {
+		return int64(p.podSize)
+	}
+	return 0
 }
 
 func ptrS(s string) *string { return &s }

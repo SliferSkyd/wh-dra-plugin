@@ -109,7 +109,8 @@ func (d *driver) publishResourceSlice(ctx context.Context) error {
 		resources = resourceslice.DriverResources{
 			Pools: map[string]resourceslice.Pool{
 				d.manager.PoolName(): {
-					Slices: nil,
+					TotalSliceCount: d.manager.PoolTotalSliceCount(),
+					Slices:          nil,
 				},
 			},
 		}
@@ -184,7 +185,8 @@ func (d *driver) labelBasedResources() resourceslice.DriverResources {
 	return resourceslice.DriverResources{
 		Pools: map[string]resourceslice.Pool{
 			m.PoolName(): {
-				Slices: []resourceslice.Slice{{Devices: []resourceapi.Device{device}}},
+				TotalSliceCount: m.PoolTotalSliceCount(),
+				Slices:          []resourceslice.Slice{{Devices: []resourceapi.Device{device}}},
 			},
 		},
 	}
