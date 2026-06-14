@@ -20,12 +20,18 @@ import (
 
 const driverName = "wormhole.tenstorrent.com"
 
+// fmRetryInterval is how often the background goroutine retries FM enrollment
+// after a startup failure. Kept short so the ResourceSlice is upgraded to
+// FM-sourced data quickly once the agent becomes ready.
+const fmRetryInterval = 10 * time.Second
+
 type driver struct {
 	helper  *kubeletplugin.Helper
 	state   *DeviceState
 	manager *WHManager
 	profile profiles.Profile // nil when FM integration is disabled
 	healthy bool             // false → publish empty pool
+	fmReady bool             // true once EnumerateDevices has succeeded at least once
 }
 
 func NewDriver(ctx context.Context, cfg *config, k8s kubernetes.Interface) (*driver, error) {
@@ -89,6 +95,9 @@ func NewDriver(ctx context.Context, cfg *config, k8s kubernetes.Interface) (*dri
 		return nil, fmt.Errorf("publish resource slice: %w", err)
 	}
 
+	// If FM wasn't ready at startup, retry in the background until it is.
+	d.startFMRetry(ctx)
+
 	return d, nil
 }
 
@@ -97,7 +106,6 @@ func (d *driver) publishResourceSlice(ctx context.Context) error {
 
 	switch {
 	case !d.healthy:
-		// Publish empty pool so the scheduler stops offering this node.
 		resources = resourceslice.DriverResources{
 			Pools: map[string]resourceslice.Pool{
 				d.manager.nodeName: {Slices: nil},
@@ -111,6 +119,8 @@ func (d *driver) publishResourceSlice(ctx context.Context) error {
 		if err != nil {
 			klog.Errorf("FM EnumerateDevices failed: %v; falling back to label-based device", err)
 			resources = d.labelBasedResources()
+		} else {
+			d.fmReady = true
 		}
 
 	default:
@@ -121,6 +131,37 @@ func (d *driver) publishResourceSlice(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// startFMRetry retries FM enrollment every fmRetryInterval until the first
+// successful EnumerateDevices call. A no-op if FM is already ready or disabled.
+func (d *driver) startFMRetry(ctx context.Context) {
+	if d.profile == nil || d.fmReady {
+		return
+	}
+	klog.Infof("FM not ready at startup, will retry every %s", fmRetryInterval)
+	go func() {
+		ticker := time.NewTicker(fmRetryInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if d.fmReady {
+					return
+				}
+				if err := d.publishResourceSlice(ctx); err != nil {
+					klog.Errorf("FM retry: republish failed: %v", err)
+					continue
+				}
+				if d.fmReady {
+					klog.Infof("FM retry succeeded on node %s, ResourceSlice upgraded to FM data", d.manager.nodeName)
+					return
+				}
+			}
+		}
+	}()
 }
 
 // labelBasedResources builds the pre-FM single-device ResourceSlice from node
