@@ -181,3 +181,42 @@ func TestPoolName_BothNodesAgree(t *testing.T) {
 		t.Errorf("pool names diverge: node-a %q != node-b %q", nodeA.PoolName(), nodeB.PoolName())
 	}
 }
+
+func TestPoolTotalSliceCount(t *testing.T) {
+	tests := []struct {
+		desc    string
+		podSize int
+		want    int64
+	}{
+		{"single-node returns 0 (library default)", 1, 0},
+		{"2-node returns 2", 2, 2},
+		{"8-node Galaxy returns 8", 8, 8},
+	}
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			m := &WHManager{podSize: tt.podSize}
+			if got := m.PoolTotalSliceCount(); got != tt.want {
+				t.Errorf("PoolTotalSliceCount() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNoPartialAllocation verifies that multi-node pools set TotalSliceCount=podSize.
+// This is the guard that prevents the scheduler from allocating when only one
+// node in a chip-to-chip pair is healthy.
+func TestNoPartialAllocation(t *testing.T) {
+	nodeA := &WHManager{nodeName: "worker-1", physicalPod: "t3k-pod-0", podSize: 2}
+	nodeB := &WHManager{nodeName: "worker-2", physicalPod: "t3k-pod-0", podSize: 2}
+
+	if nodeA.PoolName() != nodeB.PoolName() {
+		t.Errorf("pool names must match for shared pool: %q != %q", nodeA.PoolName(), nodeB.PoolName())
+	}
+	if nodeA.PoolTotalSliceCount() != int64(nodeA.podSize) {
+		t.Errorf("node-a TotalSliceCount = %d, want %d", nodeA.PoolTotalSliceCount(), nodeA.podSize)
+	}
+	if nodeB.PoolTotalSliceCount() != int64(nodeB.podSize) {
+		t.Errorf("node-b TotalSliceCount = %d, want %d", nodeB.PoolTotalSliceCount(), nodeB.podSize)
+	}
+}
+

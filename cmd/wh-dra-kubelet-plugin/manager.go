@@ -158,6 +158,17 @@ func (m *WHManager) PoolName() string {
 	return m.nodeName
 }
 
+// PoolTotalSliceCount returns the TotalSliceCount to set on the pool.
+// For multi-node pools this equals podSize: the scheduler will not allocate
+// from the pool until it can see all podSize slices (one per node).
+// Zero for single-node pools — the library default (len(Slices)) is correct.
+func (m *WHManager) PoolTotalSliceCount() int64 {
+	if m.podSize > 1 {
+		return int64(m.podSize)
+	}
+	return 0
+}
+
 // CommonEnvs returns the env vars injected into every container on this node.
 func (m *WHManager) CommonEnvs() []string {
 	envs := []string{

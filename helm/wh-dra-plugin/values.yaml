@@ -32,6 +32,6 @@ nodeSelector:
 # Topology ConfigMap — populated once per cluster by the admin.
 # Maps node name → "physical-pod=<name> host-rank=<n> pod-size=<n>"
 topology:
-  t3k-node-a: "physical-pod=t3k-a host-rank=0 pod-size=1"
-  t3k-node-b: "physical-pod=t3k-b host-rank=0 pod-size=1"
+  t3k-node-a: "physical-pod=t3k-pod-0 host-rank=0 pod-size=2"
+  t3k-node-b: "physical-pod=t3k-pod-0 host-rank=1 pod-size=2"
 

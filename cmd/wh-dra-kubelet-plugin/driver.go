@@ -108,7 +108,10 @@ func (d *driver) publishResourceSlice(ctx context.Context) error {
 	case !d.healthy:
 		resources = resourceslice.DriverResources{
 			Pools: map[string]resourceslice.Pool{
-				d.manager.PoolName(): {Slices: nil},
+				d.manager.PoolName(): {
+					TotalSliceCount: d.manager.PoolTotalSliceCount(),
+					Slices:          nil,
+				},
 			},
 		}
 		klog.Warningf("published empty ResourceSlice on pool %s (T3K unhealthy)", d.manager.PoolName())
@@ -181,7 +184,10 @@ func (d *driver) labelBasedResources() resourceslice.DriverResources {
 	}
 	return resourceslice.DriverResources{
 		Pools: map[string]resourceslice.Pool{
-			m.PoolName(): {Slices: []resourceslice.Slice{{Devices: []resourceapi.Device{device}}}},
+			m.PoolName(): {
+				TotalSliceCount: m.PoolTotalSliceCount(),
+				Slices:          []resourceslice.Slice{{Devices: []resourceapi.Device{device}}},
+			},
 		},
 	}
 }
