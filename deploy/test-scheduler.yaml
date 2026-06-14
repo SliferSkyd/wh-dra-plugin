@@ -1,29 +1,44 @@
 # Gang-scheduled test: 2 pods, one per node, sharing pool "t3k-pod-0".
 #
 # What this verifies:
-#   1. Both pods schedule with one per node (DRA exclusivity + anti-affinity)
-#   2. CEL selector on physical_pod pins them to the connected pair only
-#   3. Each pod gets its node's TT_HOST_RANK (0 or 1) from CDI injection
+#   1. Both pods schedule atomically (PodGroup minMember: 2)
+#   2. Each pod lands on its designated node (nodeSelector by host-rank)
+#   3. DRA exclusivity: each claim gets the device on its pinned node
 #   4. resourceSliceCount:2 blocks allocation when a node plugin is down
-#   5. Gang gate ensures both pods schedule simultaneously (not one before the other)
 #
-# Gang scheduling via Scheduling Gates:
-#   Each pod carries schedulingGates: [{name: "tenstorrent.com/gang-ready"}].
-#   The gang gate controller (running inside the DaemonSet plugin on every node)
-#   watches pods with the tenstorrent.com/gang-group label.  When the number of
-#   active pods in a group reaches tenstorrent.com/gang-size the controller
-#   removes the gate from all pods at once.  The default scheduler then sees all
-#   pods in the same scheduling cycle and DRA's sequential PreBind ensures they
-#   land on different nodes.
+# Why nodeSelector is required with coscheduling + DRA:
+#   Without node pinning, both pods compete for devices from the same pool while
+#   both sit in Permit(WAIT). The coscheduling PostFilter rejects the waiting pod
+#   when the second pod fails filter, which clears the DRA inFlightAllocation,
+#   causing an infinite retry loop.
 #
-# Expected result: one pod on t3k-node-a (TT_HOST_RANK=0),
-#                  one pod on t3k-node-b (TT_HOST_RANK=1)
+#   With nodeSelector each pod can only ever reach ONE node, so it reserves ONE
+#   specific device (node-a's or node-b's). The two inFlightAllocations are for
+#   different devices — no conflict even while both pods wait in Permit.
+#
+# Requires: scheduler-plugins coscheduling scheduler
+#   helm repo add scheduler-plugins https://scheduler-plugins.sigs.k8s.io
+#   helm install scheduler-plugins scheduler-plugins/scheduler-plugins \
+#     --namespace scheduler-plugins --create-namespace --version 0.34.7
+#   helm show crds scheduler-plugins/scheduler-plugins --version 0.34.7 | kubectl apply -f -
+#
+# Expected result: t3k-scheduler-test-0 on t3k-node-a (TT_HOST_RANK=0),
+#                  t3k-scheduler-test-1 on t3k-node-b (TT_HOST_RANK=1)
 #
 # Run:
 #   kubectl apply -f deploy/test-scheduler.yaml
-#   kubectl get pods -l job-name=t3k-scheduler-test -o wide -w
-#   kubectl logs -l job-name=t3k-scheduler-test --prefix
+#   kubectl get pods -l app=t3k-scheduler-test -o wide -w
+#   kubectl logs -l app=t3k-scheduler-test --prefix
 #   kubectl delete -f deploy/test-scheduler.yaml
+---
+apiVersion: scheduling.x-k8s.io/v1alpha1
+kind: PodGroup
+metadata:
+  name: t3k-scheduler-test-gang
+  namespace: default
+spec:
+  minMember: 2
+  scheduleTimeoutSeconds: 60
 ---
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaimTemplate
@@ -42,45 +57,66 @@ spec:
               expression: >
                 device.attributes["tenstorrent.com"]["physical_pod"] == "t3k-pod-0"
 ---
-apiVersion: batch/v1
-kind: Job
+# Pod pinned to host-rank=0 (t3k-node-a). Its DRA claim can only allocate
+# device-A from t3k-node-a's ResourceSlice — never competes with pod-1.
+apiVersion: v1
+kind: Pod
 metadata:
-  name: t3k-scheduler-test
+  name: t3k-scheduler-test-0
   namespace: default
+  labels:
+    app: t3k-scheduler-test
+    scheduling.x-k8s.io/pod-group: t3k-scheduler-test-gang
 spec:
-  completionMode: Indexed
-  completions: 2
-  parallelism: 2
-  template:
-    metadata:
-      labels:
-        job-name: t3k-scheduler-test
-        tenstorrent.com/gang-group: t3k-scheduler-test
-        tenstorrent.com/gang-size: "2"
-    spec:
-      schedulingGates:
-      - name: tenstorrent.com/gang-ready
-      restartPolicy: Never
-      resourceClaims:
+  schedulerName: scheduler-plugins-scheduler
+  restartPolicy: Never
+  nodeSelector:
+    tenstorrent.com/host-rank: "0"
+  resourceClaims:
+  - name: t3k
+    resourceClaimTemplateName: t3k-scheduler-test-claim
+  containers:
+  - name: test
+    image: ubuntu:22.04
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      echo "=== pod rank-0 node=$(cat /etc/hostname) ==="
+      env | grep -E "^TT_|^WH_" | sort
+      echo "=== OK — sleeping so both pods are visible simultaneously ==="
+      sleep 30
+    resources:
+      claims:
       - name: t3k
-        resourceClaimTemplateName: t3k-scheduler-test-claim
-      affinity:
-        podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-          - topologyKey: kubernetes.io/hostname
-            labelSelector:
-              matchLabels:
-                job-name: t3k-scheduler-test
-      containers:
-      - name: test
-        image: ubuntu:22.04
-        command: ["/bin/bash", "-c"]
-        args:
-        - |
-          echo "=== pod index=$JOB_COMPLETION_INDEX node=$(cat /etc/hostname) ==="
-          env | grep -E "^TT_|^WH_" | sort
-          echo "=== OK — sleeping so both pods are visible simultaneously ==="
-          sleep 30
-        resources:
-          claims:
-          - name: t3k
+---
+# Pod pinned to host-rank=1 (t3k-node-b). Its DRA claim can only allocate
+# device-B from t3k-node-b's ResourceSlice — never competes with pod-0.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: t3k-scheduler-test-1
+  namespace: default
+  labels:
+    app: t3k-scheduler-test
+    scheduling.x-k8s.io/pod-group: t3k-scheduler-test-gang
+spec:
+  schedulerName: scheduler-plugins-scheduler
+  restartPolicy: Never
+  nodeSelector:
+    tenstorrent.com/host-rank: "1"
+  resourceClaims:
+  - name: t3k
+    resourceClaimTemplateName: t3k-scheduler-test-claim
+  containers:
+  - name: test
+    image: ubuntu:22.04
+    command: ["/bin/bash", "-c"]
+    args:
+    - |
+      echo "=== pod rank-1 node=$(cat /etc/hostname) ==="
+      env | grep -E "^TT_|^WH_" | sort
+      echo "=== OK — sleeping so both pods are visible simultaneously ==="
+      sleep 30
+    resources:
+      claims:
+      - name: t3k
