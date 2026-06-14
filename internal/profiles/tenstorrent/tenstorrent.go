@@ -21,9 +21,6 @@ import (
 	topologypb "github.com/tenstorrent/wh-dra-plugin/internal/fabricmanager/proto/topology"
 )
 
-// deviceName is the stable name of the aggregate device advertised in the
-// ResourceSlice. One device per node represents the full T3K (all chips).
-const deviceName = "wormhole-t3k"
 
 // hostBundle groups a single MMIO-capable ASIC with its non-MMIO siblings
 // on the same physical tray. The MMIO chip controls the /dev/tenstorrent/N
@@ -109,12 +106,14 @@ func (p *Profile) EnumerateDevices(ctx context.Context) (resourceslice.DriverRes
 	}, nil
 }
 
-// DeviceNodePaths implements profiles.Profile. For the aggregate device
-// "wormhole-t3k" it returns the /dev/tenstorrent/<N> path of every
-// MMIO-capable ASIC discovered in the last EnumerateDevices call.
+// DeviceNodePaths implements profiles.Profile. It returns the
+// /dev/tenstorrent/<N> paths for every MMIO-capable ASIC discovered in the
+// last EnumerateDevices call. The device name in the ResourceSlice is
+// node-specific (nodeName with dots replaced by dashes) so that two nodes in
+// the same pool do not appear to share a device.
 func (p *Profile) DeviceNodePaths(name string) ([]string, error) {
-	if name != deviceName {
-		return nil, fmt.Errorf("tenstorrent profile: unknown device %q (only %q is published)", name, deviceName)
+	if name != p.deviceName() {
+		return nil, fmt.Errorf("tenstorrent profile: unknown device %q (expected %q)", name, p.deviceName())
 	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -185,7 +184,7 @@ func (p *Profile) buildDevice(bundles []hostBundle) (resourceapi.Device, []strin
 	}
 
 	device := resourceapi.Device{
-		Name:       deviceName,
+		Name:       p.deviceName(),
 		Attributes: attrs,
 	}
 	if totalMem > 0 {
@@ -263,6 +262,14 @@ func (p *Profile) poolTotalSliceCount() int64 {
 		return int64(p.podSize)
 	}
 	return 0
+}
+
+// deviceName returns a stable, pool-unique name for this node's device.
+// Using the node name (dots → dashes) ensures two nodes in the same pool
+// (same physicalPod) publish devices with different names, which is required
+// for the DRA scheduler to treat them as independent allocatable resources.
+func (p *Profile) deviceName() string {
+	return strings.ReplaceAll(p.nodeName, ".", "-")
 }
 
 func ptrS(s string) *string { return &s }

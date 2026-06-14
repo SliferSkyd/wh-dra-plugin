@@ -172,7 +172,7 @@ func (d *driver) startFMRetry(ctx context.Context) {
 func (d *driver) labelBasedResources() resourceslice.DriverResources {
 	m := d.manager
 	device := resourceapi.Device{
-		Name: "wormhole-t3k",
+		Name: m.DeviceName(),
 		Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
 			"tenstorrent.com/arch":         {StringValue: ptr(m.arch)},
 			"tenstorrent.com/board_type":   {StringValue: ptr(m.boardType)},
