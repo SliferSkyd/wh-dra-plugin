@@ -1598,39 +1598,65 @@ For **bare-metal T3K nodes like ours**, this guarantee does not exist. t3k-node-
 
 ### 6.5.2 How ResourceSlices are published for multi-host TPU
 
-Each node in a multi-host TPU slice publishes its **own** ResourceSlice containing only that node's local chips:
+Verified from `driver.go:144`: each node publishes its **own** ResourceSlice under a pool named after itself:
+
+```go
+Pools: map[string]resourceslice.Pool{
+    d.config.flags.nodeName: {Slices: []resourceslice.Slice{resourceSlice}},
+}
+```
 
 ```
-t3k-node-a (host 0):  ResourceSlice → driver: google.com/tpu, devices: [tpu-0, tpu-1, tpu-2, tpu-3]
-t3k-node-b (host 1):  ResourceSlice → driver: google.com/tpu, devices: [tpu-0, tpu-1, tpu-2, tpu-3]
+node-a:  pool="node-a", resourceSliceCount=1, devices: [tpu-0, tpu-1, tpu-2, tpu-3]
+node-b:  pool="node-b", resourceSliceCount=1, devices: [tpu-0, tpu-1, tpu-2, tpu-3]
 ```
 
-There is **no single ResourceSlice that spans both hosts**. The `pool.resourceSliceCount` field on each slice tells the scheduler how many slices make up the complete pool, so it can detect when it has seen all of them.
+Every pool has exactly one slice. `resourceSliceCount` is always 1 — set automatically by the
+DRA framework as `len(pool.Slices)`. There is no shared pool name, no pool count > 1, and
+no DRA-level mechanism that groups the two nodes together.
 
-**Our approach is the same**: each node publishes its own `wormhole-t3k` device with 8 chips. What we are missing is the pool-level metadata that lets the scheduler reason about which nodes form a complete T3K "pod" (physical-pod=t3k-a).
+**Multi-host coordination comes entirely from outside DRA:**
+- GCP provisions the TPU node pool atomically (all nodes or none)
+- JobSet `exclusive-topology` annotation forces all pods onto the same node pool
+- Node labels (`gke-tpu-topology`) drive nodeSelector filtering
+
+DRA just handles per-node device allocation. The multi-host guarantee is GCP infrastructure.
+
+**Our situation is different**: we are on bare metal with no infrastructure atomicity. We
+cannot rely on GCP to provision nodes together. We need to use DRA attributes (`physical_pod`)
+and pod affinity rules to achieve the same effect that GCP infrastructure gives TPU for free.
 
 ---
 
-### 6.5.3 allocationMode: ExactCount (per pod) not a single cross-node claim
+### 6.5.3 allocationMode: All (per pod) — take every chip on the node or none
 
-Each pod in a multi-host workload creates **its own ResourceClaim** (via a ResourceClaimTemplate) requesting only the chips on its own node:
+Verified in `demo/specs/tpu-test.yaml` and enforced in `state.go`:
 
 ```yaml
-# ResourceClaimTemplate for one TPU host
+# demo/specs/tpu-test.yaml
 spec:
   spec:
     devices:
       requests:
       - name: tpu
         exactly:
-          deviceClassName: google.com/tpu
-          allocationMode: ExactCount
-          count: 4          # chips per host, not total chips
+          deviceClassName: tpu.google.com
+          allocationMode: All    # ← All, not ExactCount
 ```
 
-For a 4-host TPU slice: 4 pods × 4 chips each = 16 chips total. Each pod allocates independently from its node's ResourceSlice. There is no single ResourceClaim that atomically reserves chips on all 4 nodes at once.
+`state.go` validates at `PrepareResourceClaims` time that the request is for ALL allocatable
+TPU devices on the node. Partial allocation is rejected. This is stricter than `ExactCount`
+(which allows requesting a specific count): with `All`, a pod must take every chip on the node
+or none at all.
 
-**Our current approach is already correct**: we use ResourceClaimTemplate so each pod gets its own claim for its node's `wormhole-t3k` device.
+For a 4-host TPU slice: 4 pods × `All` chips per host = all chips on all 4 nodes. Each pod
+allocates independently from its own node's ResourceSlice. There is no single ResourceClaim
+that atomically reserves chips on all 4 nodes at once.
+
+**Our approach:** We use ResourceClaimTemplate so each pod gets its own claim. We do not
+enforce `All` — a workload can request a partial set of chips. This is intentional: T3K
+workloads may legitimately use 4 of 8 chips. We can add a `All` validation in
+`PrepareResourceClaims` later if needed.
 
 ---
 
@@ -1670,40 +1696,44 @@ The scheduler holds all 4 pods in a waiting queue, then binds all of them atomic
 
 ---
 
-### 6.5.5 TPU_WORKER_HOSTNAMES: injected by a webhook, not by PrepareResourceClaims
+### 6.5.5 TPU_WORKER_HOSTNAMES: injected via CDI (open-source); webhook in GKE (closed-source)
 
-This is the most important lesson for our peer hostname injection gap.
+Verified in `cmd/tpu-dra-kubeletplugin/util.go` and `cdi.go`:
 
-`TPU_WORKER_HOSTNAMES` is **not** injected by `PrepareResourceClaims`. It is injected by a **mutating admission webhook** that fires when a Job is created.
+```go
+// util.go — single-host path
+func addSingleHostEnvs(envs map[string]string) {
+    envs["TPU_WORKER_ID"] = "0"
+    envs["TPU_WORKER_HOSTNAMES"] = "localhost"
+}
+```
 
-**Why:** `PrepareResourceClaims` runs on a single node's kubelet. It only knows about the local device. Computing `TPU_WORKER_HOSTNAMES` requires knowing the DNS names of **all** pods in the slice — information that only exists at the cluster level (API server has full view of all pods), not at the per-node plugin level.
+The open-source TPU DRA plugin injects `TPU_WORKER_HOSTNAMES` through **CDI** during
+`PrepareResourceClaims` — the same mechanism we use. For single-host deployments it simply
+sets the value to `"localhost"`. No mutating admission webhook was found anywhere in the
+open-source codebase (only a `ValidatingAdmissionPolicy` that rejects invalid claims).
 
-**The GKE webhook fires when all of:**
-1. The pod spec has `completionMode: Indexed`
-2. `subdomain` is set (enables stable pod DNS names)
-3. `parallelism > 1`
-4. Pod requests `google.com/tpu` resources
+**For multi-host (GKE closed-source):** The open-source code only shows the single-host path.
+Google's GKE implementation almost certainly handles multi-host differently — the architectural
+reason is sound: `PrepareResourceClaims` runs on one node's kubelet with no view of other pods
+in the cluster. A multi-host implementation needs the full pod list at admission time to compute
+correct hostnames. GKE likely handles this server-side, but the implementation is not publicly
+visible.
 
-**What the webhook injects:**
+**The architectural constraint still holds for us:** we cannot inject `TT_WORKER_HOSTNAMES`
+correctly from `PrepareResourceClaims` because that callback only knows about the local node.
+A mutating admission webhook or a cluster-level controller is required to have the full pod
+view. The approach documented in our MULTI-NODE.md (webhook at Job admission time) is the
+correct design.
+
+**What the multi-host injection should look like** (our design, not verified from TPU source):
 ```yaml
 env:
-- name: TPU_WORKER_ID
-  value: "0"         # this pod's index (0..N-1)
-- name: TPU_WORKER_HOSTNAMES
-  value: "job-0.subdomain.ns.svc,job-1.subdomain.ns.svc,job-2.subdomain.ns.svc,job-3.subdomain.ns.svc"
-```
-
-The hostnames are computed from the Indexed Job naming convention: `<job-name>-<index>.<subdomain>.<namespace>.svc.cluster.local`. The webhook knows all the names at admission time without needing to wait for pods to be scheduled.
-
-**Equivalent for T3K:** We need a webhook that fires on StatefulSet/Job pod creation and injects:
-```yaml
-- name: TT_WORKER_HOSTNAMES
-  value: "wh-t3k-worker-0.wh-t3k-headless,wh-t3k-worker-1.wh-t3k-headless"
 - name: TT_WORKER_ID
-  value: "0"
+  value: "0"         # this pod's rank (from TT_HOST_RANK)
+- name: TT_WORKER_HOSTNAMES
+  value: "job-0.svc.ns.svc,job-1.svc.ns.svc"   # computed from Job index + subdomain
 ```
-
-The StatefulSet naming convention (`<statefulset-name>-<index>.<headless-svc>`) is predictable at admission time, making this straightforward to implement.
 
 ---
 
@@ -1711,14 +1741,16 @@ The StatefulSet naming convention (`<statefulset-name>-<index>.<headless-svc>`) 
 
 | TPU mechanism | Our equivalent | Status |
 |---|---|---|
-| Per-node ResourceSlice with pool metadata | Per-node ResourceSlice (missing `resourceSliceCount`) | Partial |
-| `allocationMode: ExactCount` per pod | ResourceClaimTemplate per pod | ✅ Done |
-| `physical_pod` as exclusive topology label | `tenstorrent.com/physical_pod` in ResourceSlice + node label | ✅ Published, not yet used for gang scheduling |
+| Per-node ResourceSlice, node name as pool | Per-node ResourceSlice, node name as pool | ✅ Same model |
+| `resourceSliceCount` auto-set by framework | Auto-set by framework (= 1 per node today) | ✅ Same — set `Count` in pool for multi-node |
+| `allocationMode: All` — take every chip or none | No enforcement today (partial allowed) | Partial — can add later |
+| `TPU_WORKER_HOSTNAMES=localhost` via CDI (single-host) | `TT_ETHERNET_IFACE` via CDI | ✅ CDI injection working |
+| Multi-host hostname injection (GKE closed-source) | Webhook for `TT_WORKER_HOSTNAMES` | ❌ Missing |
+| `physical_pod` as exclusive topology label | `tenstorrent.com/physical_pod` in ResourceSlice + node label | ✅ Published, not yet used for scheduling |
 | JobSet + `exclusive-topology` annotation | StatefulSet + `physical_pod` affinity (not yet wired) | ❌ Missing |
-| Mutating webhook for `TPU_WORKER_HOSTNAMES` | Mutating webhook for `TT_WORKER_HOSTNAMES` | ❌ Missing |
 | Native PodGroup gang scheduling | Available alpha in K8s 1.35 | ❌ Not yet used |
 
-The two missing pieces that block 2-node vLLM today are: **(1) a webhook for `TT_WORKER_HOSTNAMES`** and **(2) wiring `physical_pod` into JobSet/StatefulSet affinity rules** so the scheduler guarantees both pods land on nodes that are actually connected.
+The two missing pieces that block 2-node vLLM today are: **(1) a cluster-level mechanism for `TT_WORKER_HOSTNAMES`** (webhook or controller) and **(2) wiring `physical_pod` into StatefulSet/Job affinity rules** so the scheduler guarantees both pods land on nodes that are actually chip-to-chip connected.
 
 ---
 

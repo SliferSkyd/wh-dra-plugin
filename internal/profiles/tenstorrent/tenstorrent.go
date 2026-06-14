@@ -101,7 +101,7 @@ func (p *Profile) EnumerateDevices(ctx context.Context) (resourceslice.DriverRes
 
 	return resourceslice.DriverResources{
 		Pools: map[string]resourceslice.Pool{
-			p.nodeName: {
+			p.poolName(): {
 				Slices: []resourceslice.Slice{{Devices: []resourceapi.Device{device}}},
 			},
 		},
@@ -242,6 +242,15 @@ func chipIDsOf(asics []*topologypb.AsicInfo) []uint32 {
 		ids[i] = a.GetChipId()
 	}
 	return ids
+}
+
+// poolName returns the ResourceSlice pool key. Multi-node chip-to-chip pods
+// share a physicalPod name so the scheduler groups both nodes as one device.
+func (p *Profile) poolName() string {
+	if p.podSize > 1 {
+		return p.physicalPod
+	}
+	return p.nodeName
 }
 
 func ptrS(s string) *string { return &s }

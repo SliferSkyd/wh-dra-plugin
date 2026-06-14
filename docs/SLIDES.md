@@ -917,7 +917,7 @@ T3K health changed: healthy=true — all 8 chips accessible
 | Fault / error code monitoring | ✅ (XID) | ✅ | ❌ |
 | Auto topology discovery (no ConfigMap) | ✅ | ✅ | ❌ |
 
-> **Speaker notes:** The peer hostname injection gap is the blocker for multi-node vLLM. NVIDIA injects `NVIDIA_VISIBLE_DEVICES` + NVLink topology. TPU injects `TPU_WORKER_HOSTNAMES`. We need an equivalent `TT_WORKER_HOSTNAMES` — the list of peer pod IPs/hostnames — injected at PrepareResourceClaims time, not at pod spec time.
+> **Speaker notes:** The peer hostname injection gap is the blocker for multi-node vLLM. NVIDIA injects `NVIDIA_VISIBLE_DEVICES` + NVLink topology. TPU injects `TPU_WORKER_HOSTNAMES` (via CDI for single-host; GKE closed-source for multi-host). We need an equivalent `TT_WORKER_HOSTNAMES` injected at the cluster level — a webhook or controller, not PrepareResourceClaims (which only has per-node visibility).
 
 ---
 
@@ -940,70 +940,73 @@ JobSet exclusive-topology annotation → all pods in one replica land on same no
   (node pool = physical slice = ICI boundary)
 ```
 
-**What each node's ResourceSlice looks like:**
+**What each node's ResourceSlice actually looks like** (verified from `driver.go:144`):
 ```yaml
-# Each host publishes its OWN ResourceSlice (not one big cross-node slice)
+# Each host publishes its OWN ResourceSlice keyed by NODE NAME (not a shared pool)
 spec:
   driver: google.com/tpu
   pool:
-    name: tpu-slice-pool
-    resourceSliceCount: 4      # ← tells scheduler: 4 slices make a complete pool
+    name: <node-name>          # ← node name, same as our current model
+    resourceSliceCount: 1      # ← auto-computed by framework as len(pool.Slices)
   devices:
   - name: tpu-0
-  - name: tpu-1
-  - name: tpu-2
-  - name: tpu-3
+  ...
 ```
 
-> **Speaker notes:** The critical lesson: TPU doesn't do atomic multi-node scheduling in the Kubernetes scheduler. It uses GCP infrastructure atomicity (all-or-nothing node pool provisioning) + JobSet affinity rules to ensure pods land on connected nodes. Our T3K bare-metal setup doesn't have GCP node pool atomicity, but we already have `physical_pod` labels that can serve the same purpose in affinity rules.
+`resourceSliceCount` is set automatically by the DRA framework — not by the driver. The driver just puts devices into slices; the framework sets the count. For single-node pools it is always 1.
+
+> **Speaker notes:** Key correction from code review: TPU does NOT use a shared pool name across multiple hosts. Each node uses its own node name as the pool key — identical to our current model. The GCP infrastructure atomicity (all-or-nothing node pool provisioning) is what guarantees connected nodes are available together, not a shared pool name. Our bare-metal equivalent is the `physical_pod` label in affinity rules.
 
 ---
 
 ## Slide 30 — How TPU Injects Peer Hostnames (and What We Need)
 
-**`TPU_WORKER_HOSTNAMES` is injected by a mutating admission webhook — not by PrepareResourceClaims.**
+**What the open-source code actually shows** (verified from `util.go:412` and `cdi.go`):
 
-**Why a webhook, not PrepareResourceClaims?**
+```go
+// Single-host path — injected via CDI during PrepareResourceClaims
+func addSingleHostEnvs(envs map[string]string) {
+    envs["TPU_WORKER_ID"] = "0"
+    envs["TPU_WORKER_HOSTNAMES"] = "localhost"
+}
+```
+
+For **single-host** deployments, `TPU_WORKER_HOSTNAMES=localhost` is injected through CDI —
+the same mechanism we use. No mutating webhook exists in the open-source plugin.
+
+**For multi-host (GKE closed-source):** Google's production GKE implementation handles this
+server-side, but the code is not public. The architectural reason why CDI cannot do it for
+multi-host is sound:
+
 ```
 PrepareResourceClaims runs on ONE node's kubelet
   → only knows about the local device
-  → cannot see other pods' DNS names
+  → cannot see other pods' IP addresses
   → cannot compute the full peer list
 
-Mutating webhook runs at Job admission time (API server level)
+A cluster-level mechanism (webhook or controller) runs at Job admission
   → has full cluster view
   → knows all pod names before they are scheduled
   → can compute DNS names from Indexed Job naming convention
 ```
 
-**What the GKE webhook injects (fires when Job has Indexed mode + subdomain + parallelism > 1):**
-```yaml
-env:
-- name: TPU_WORKER_ID
-  value: "0"          # this pod's 0-indexed rank
-- name: TPU_WORKER_HOSTNAMES
-  value: "job-0.svc.ns,job-1.svc.ns,job-2.svc.ns,job-3.svc.ns"
-  # computed from Indexed Job naming: <job>-<index>.<subdomain>.<ns>.svc.cluster.local
-```
-
-**What we need for T3K (StatefulSet naming is also predictable):**
+**What we need for T3K** (our design, same architectural reasoning):
 ```yaml
 env:
 - name: TT_WORKER_ID
   value: "0"
 - name: TT_WORKER_HOSTNAMES
   value: "wh-t3k-worker-0.wh-t3k-headless,wh-t3k-worker-1.wh-t3k-headless"
-  # StatefulSet DNS: <name>-<index>.<headless-svc>.<ns>.svc.cluster.local
 ```
 
 **What we already have that helps:**
-- `tenstorrent.com/physical_pod` in ResourceSlice and node labels → can drive affinity rules
-- Headless Service in StatefulSet YAML → predictable DNS names already there
-- `host_rank` and `pod_size` published → know total number of workers
+- `TT_ETHERNET_IFACE` injected via CDI today ✅
+- `host_rank` and `pod_size` in CDI env vars ✅
+- Headless Service in StatefulSet YAML → predictable DNS names ✅
 
-**The gap:** no admission webhook that reads these and injects `TT_WORKER_HOSTNAMES` at pod creation.
+**The gap:** no cluster-level mechanism to inject `TT_WORKER_HOSTNAMES` across nodes.
 
-> **Speaker notes:** This is the P1 blocker for 2-node vLLM. The webhook itself is straightforward: watch for StatefulSet/Job pods that have a `wh-t3k` ResourceClaim, compute `TT_WORKER_HOSTNAMES` from the StatefulSet name + replica count + headless service name, and inject it. No changes to the DRA plugin are needed — it's a separate admission webhook binary.
+> **Speaker notes:** The open-source TPU DRA code does NOT contain a mutating webhook — only a ValidatingAdmissionPolicy. The multi-host hostname injection is handled by GKE infrastructure (closed-source). Our design (admission webhook for TT_WORKER_HOSTNAMES) is the right approach for the same architectural reasons, but it's our own design, not a copy of TPU.
 
 ---
 

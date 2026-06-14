@@ -148,10 +148,22 @@ func (m *WHManager) discoverDevices() error {
 	return nil
 }
 
+// PoolName returns the ResourceSlice pool key for this node.
+// When podSize > 1 (chip-to-chip multi-node), all hosts in the same physicalPod
+// publish under a shared name so the scheduler groups them as one logical device.
+func (m *WHManager) PoolName() string {
+	if m.podSize > 1 {
+		return m.physicalPod
+	}
+	return m.nodeName
+}
+
 // CommonEnvs returns the env vars injected into every container on this node.
 func (m *WHManager) CommonEnvs() []string {
 	envs := []string{
-		fmt.Sprintf("TT_MESH_HOST_RANK=%d", m.hostRank),
+		fmt.Sprintf("TT_HOST_RANK=%d", m.hostRank),
+		fmt.Sprintf("TT_MESH_ID=0"),
+		fmt.Sprintf("TT_METAL_CACHE=/tmp/tt-metal-cache-%d", m.hostRank),
 		fmt.Sprintf("TT_CHIP_COUNT=%d", m.chipCount),
 		fmt.Sprintf("TT_POD_SIZE=%d", m.podSize),
 		fmt.Sprintf("TT_PHYSICAL_POD=%s", m.physicalPod),

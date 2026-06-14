@@ -157,33 +157,42 @@ func (m *WHManager) CommonEnvs() []string {
 }
 ```
 
-### 5.2 `driver.go` — shared pool + `resourceSliceCount`
+### 5.2 `driver.go` and `tenstorrent.go` — shared pool name
 
 For chip-to-chip connected nodes, publish under a shared pool name so the scheduler treats
-both nodes as one logical device:
+both nodes as one logical device. This is implemented via `WHManager.PoolName()`:
 
 ```go
-// Multi-node mode: pool name = physicalPod, Count = podSize
-// Single-node mode: pool name = nodeName, Count = 0 (no constraint)
-poolName := m.nodeName
-var poolCount int64 = 0
-if m.podSize > 1 {
-    poolName = m.physicalPod   // "t3k-pod-0" — same on both nodes
-    poolCount = int64(m.podSize)
+// PoolName returns the ResourceSlice pool key for this node.
+// When podSize > 1 (chip-to-chip multi-node), all hosts in the same physicalPod
+// publish under a shared name so the scheduler groups them as one logical device.
+func (m *WHManager) PoolName() string {
+    if m.podSize > 1 {
+        return m.physicalPod   // "t3k-pod-0" — same on both nodes
+    }
+    return m.nodeName
 }
+```
 
+Both `labelBasedResources()` and the FM-backed path in `tenstorrent.go` use `PoolName()`:
+
+```go
 Pools: map[string]resourceslice.Pool{
-    poolName: {
-        Count:  poolCount,   // resourceSliceCount — scheduler waits for all slices
+    m.PoolName(): {
         Slices: []resourceslice.Slice{{Devices: []resourceapi.Device{device}}},
     },
 }
 ```
 
-`resourceSliceCount` is a **plugin-side field** — it does not appear in user YAML. Its effect:
-if node-b's plugin is down, the pool is incomplete and the scheduler blocks all allocations
-until both nodes are healthy. Without it, a half-visible pool could cause one pod to schedule
-while the other hangs.
+**Note on `resourceSliceCount`:** The driver-facing `resourceslice.Pool` struct (v0.35.0) has
+no `Count` field. The framework auto-computes `ResourceSliceCount = len(pool.Slices)`, which
+is always 1 per node (each node publishes 1 slice). This means the "pool incompleteness" safety
+guard (blocking allocation until all N nodes are visible) is not currently enforced by the
+scheduler. The shared pool name still provides correct grouping — both nodes appear under the
+same pool key and the CEL selector on `physical_pod` ensures the scheduler only matches nodes
+in the connected pair. A future improvement could implement true `resourceSliceCount = podSize`
+by publishing ResourceSlice objects directly via the raw Kubernetes API instead of the helper
+library.
 
 ---
 
@@ -410,7 +419,7 @@ No MPI, no MPI Operator, no launcher pod, no SSH inside containers.
 |---|---|
 | TT_HOST_RANK + TT_MESH_ID injected by CDI works | Same injection, podSize=8 |
 | Mesh graph descriptor describes multi-host topology | Galaxy descriptor: `host_topology: [1,8]`, `device_topology: [8,32]` |
-| `resourceSliceCount=podSize` prevents half-pool allocation | `Count=8` for Galaxy 8-node pod |
+| Shared pool name (`physicalPod`) groups nodes as one device | Same pool key, `podSize=8` |
 | CEL selector on `physical_pod` pins pods to right nodes | Same selector, different pod name |
 | `podFailurePolicy: FailJob` propagates crashes cleanly | Same policy, 8 pods |
 | `TT_WORKER_HOSTNAMES` webhook scales to N hosts | Webhook injects 8 hostnames |

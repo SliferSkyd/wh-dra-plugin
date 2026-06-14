@@ -211,7 +211,9 @@ crw-rw-rw- 1 root root 236, 3 /dev/tenstorrent/3
 
 === DRA-injected env vars ===
 TT_CHIP_COUNT=4
-TT_MESH_HOST_RANK=0
+TT_HOST_RANK=0
+TT_MESH_ID=0
+TT_METAL_CACHE=/tmp/tt-metal-cache-0
 TT_PHYSICAL_POD=t3k-a
 TT_POD_SIZE=1
 WH_RESOURCE_CLAIM_UID=<uid>
