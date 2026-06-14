@@ -272,30 +272,46 @@ scheduler-plugins does not implement.
 ---
 
 <a name="solution"></a>
-## 6. Final Solution — Scheduling Gates
+## 6. Final Solution — Scheduling Gates + nodeSelector
 
 Instead of holding pods inside the scheduler (Permit), we hold them **before** they enter
 the scheduler at all, using Kubernetes Scheduling Gates (stable since K8s 1.30).
 
 A gated pod is invisible to the scheduler.  Once the gate is removed, the pod enters the
-scheduling queue normally.  If we remove gates from all gang members simultaneously, the
-default scheduler processes them sequentially, and DRA's normal sequential PreBind writes
-each allocation to the API before the next pod is scheduled — no race.
+scheduling queue normally.
+
+We also add a `nodeSelector` pinning each pod to its specific node (by `tenstorrent.com/host-rank`).
+This eliminates DRA device competition: pod-0 can only reach node-a (one device), pod-1 can
+only reach node-b (a different device).  With no competition, the sequential scheduler
+correctly allocates via PreBind with no races.
 
 ```
-t=0  pod-0 created (gated)  → not visible to scheduler
-     pod-1 created (gated)  → not visible to scheduler
+t=0  pod-0 created (gated, nodeSelector=host-rank=0)  → not visible to scheduler
+     pod-1 created (gated, nodeSelector=host-rank=1)  → not visible to scheduler
+     (Kubernetes claim controller immediately creates ResourceClaims for both pods)
 
 t=2  controller: 2/2 pods present → remove both gates simultaneously
 
 t=3  scheduler processes pod-0:
-       Filter → Reserve → PreBind → device-A written to API → Bind → node-a
+       nodeSelector → only node-a considered
+       Filter → Reserve → PreBind → device-A written to API → Bind → node-a ✓
 
 t=4  scheduler processes pod-1:
-       Filter: device-A is taken (API updated by pod-0's PreBind)
-             → DRA exclusivity forces pod-1 to node-b
-       Reserve → PreBind → Bind → node-b ✓
+       nodeSelector → only node-b considered
+       device-B on node-b is free (pod-0 took device-A on a different node)
+       Filter → Reserve → PreBind → device-B written to API → Bind → node-b ✓
 ```
+
+Why nodeSelector is critical: without it, the scheduler is free to place pod-0 on
+node-b (allocating device-B), then pod-1 finds node-b's device already taken and
+node-a's device is on a node the scheduler assigned to no one — resulting in
+"cannot allocate all claims" on every retry.
+
+Why coscheduling fails even with nodeSelector: the coscheduling PostFilter fires when
+any gang member fails a filter pass.  PostFilter calls Unreserve on waiting pods,
+clearing their in-flight DRA allocations.  This can leave ResourceClaims in a
+transitional state that causes "cannot allocate all claims" on the next retry.
+Removing coscheduling from the picture (using the default scheduler) eliminates this.
 
 ---
 
@@ -338,34 +354,42 @@ automatically with the plugin binary — no separate deployment needed.
 <a name="test"></a>
 ## 9. Test Manifest
 
-`deploy/test-scheduler.yaml` is a 2-completion Indexed Job that exercises the full path:
+`deploy/test-scheduler.yaml` creates two bare Pods (one per node) with scheduling gates
+and nodeSelector.  No coscheduling scheduler or PodGroup is required.
 
 ```bash
+# Clean up any previous run first
+kubectl delete pod t3k-scheduler-test-0 t3k-scheduler-test-1 --ignore-not-found
+kubectl delete resourceclaimtemplate t3k-scheduler-test-claim --ignore-not-found
+
 kubectl apply -f deploy/test-scheduler.yaml
 
-# Both pods start Pending (gated).  After ~2 s the controller releases both gates.
-kubectl get pods -l job-name=t3k-scheduler-test -o wide -w
+# Both pods start SchedulingGated.  After ~2 s the controller releases both gates.
+kubectl get pods -l app=t3k-scheduler-test -o wide -w
 
-# Expected: one pod on t3k-node-a (TT_HOST_RANK=0), one on t3k-node-b (TT_HOST_RANK=1)
-kubectl logs -l job-name=t3k-scheduler-test --prefix
+# Expected: t3k-scheduler-test-0 on host-rank=0 node, t3k-scheduler-test-1 on host-rank=1 node
+kubectl logs -l app=t3k-scheduler-test --prefix
 
 kubectl delete -f deploy/test-scheduler.yaml
 ```
 
-Pod template excerpt:
+Pod excerpt:
 
 ```yaml
 metadata:
   labels:
-    tenstorrent.com/gang-group: t3k-scheduler-test   # same for all pods in this job
+    app: t3k-scheduler-test
+    tenstorrent.com/gang-group: t3k-scheduler-test   # identifies the gang
     tenstorrent.com/gang-size: "2"
 spec:
   schedulingGates:
   - name: tenstorrent.com/gang-ready
+  nodeSelector:
+    tenstorrent.com/host-rank: "0"   # or "1" for the second pod
 ```
 
-Use a unique `gang-group` value per job run (e.g. the Job name) so completed pods from
-previous runs don't count toward the quorum of a new run.
+Use a unique `gang-group` value per job run so completed pods from previous runs
+don't count toward the quorum of a new run.
 
 ---
 

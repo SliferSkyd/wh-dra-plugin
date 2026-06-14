@@ -1,26 +1,22 @@
 # Gang-scheduled test: 2 pods, one per node, sharing pool "t3k-pod-0".
 #
 # What this verifies:
-#   1. Both pods schedule atomically (PodGroup minMember: 2)
-#   2. Each pod lands on its designated node (nodeSelector by host-rank)
-#   3. DRA exclusivity: each claim gets the device on its pinned node
-#   4. resourceSliceCount:2 blocks allocation when a node plugin is down
+#   1. Both pods schedule atomically (scheduling gate released only when both exist)
+#   2. pod-0 always lands on the host-rank=0 node (t3k-node-a)
+#   3. pod-1 always lands on the host-rank=1 node (t3k-node-b)
+#   4. DRA allocates each node's device to the pod pinned to that node
+#   5. resourceSliceCount:2 blocks allocation when a node plugin is down
 #
-# Why nodeSelector is required with coscheduling + DRA:
-#   Without node pinning, both pods compete for devices from the same pool while
-#   both sit in Permit(WAIT). The coscheduling PostFilter rejects the waiting pod
-#   when the second pod fails filter, which clears the DRA inFlightAllocation,
-#   causing an infinite retry loop.
+# Approach: scheduling gates + nodeSelector (no coscheduling scheduler needed)
 #
-#   With nodeSelector each pod can only ever reach ONE node, so it reserves ONE
-#   specific device (node-a's or node-b's). The two inFlightAllocations are for
-#   different devices — no conflict even while both pods wait in Permit.
+#   nodeSelector eliminates the DRA device competition that breaks coscheduling.
+#   Each pod can only reach ONE node, so each pod reserves ONE specific device.
+#   There is no cross-pod race — device-A is exclusively reachable by pod-0 and
+#   device-B is exclusively reachable by pod-1.
 #
-# Requires: scheduler-plugins coscheduling scheduler
-#   helm repo add scheduler-plugins https://scheduler-plugins.sigs.k8s.io
-#   helm install scheduler-plugins scheduler-plugins/scheduler-plugins \
-#     --namespace scheduler-plugins --create-namespace --version 0.34.7
-#   helm show crds scheduler-plugins/scheduler-plugins --version 0.34.7 | kubectl apply -f -
+#   The gang gate controller (in the DaemonSet plugin) removes both scheduling
+#   gates simultaneously once count(gang-group) == gang-size, so both pods
+#   enter the default scheduler at the same time.
 #
 # Expected result: t3k-scheduler-test-0 on t3k-node-a (TT_HOST_RANK=0),
 #                  t3k-scheduler-test-1 on t3k-node-b (TT_HOST_RANK=1)
@@ -30,15 +26,6 @@
 #   kubectl get pods -l app=t3k-scheduler-test -o wide -w
 #   kubectl logs -l app=t3k-scheduler-test --prefix
 #   kubectl delete -f deploy/test-scheduler.yaml
----
-apiVersion: scheduling.x-k8s.io/v1alpha1
-kind: PodGroup
-metadata:
-  name: t3k-scheduler-test-gang
-  namespace: default
-spec:
-  minMember: 2
-  scheduleTimeoutSeconds: 60
 ---
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaimTemplate
@@ -57,8 +44,8 @@ spec:
               expression: >
                 device.attributes["tenstorrent.com"]["physical_pod"] == "t3k-pod-0"
 ---
-# Pod pinned to host-rank=0 (t3k-node-a). Its DRA claim can only allocate
-# device-A from t3k-node-a's ResourceSlice — never competes with pod-1.
+# pod-0 is pinned to the host-rank=0 node (t3k-node-a).
+# Its DRA claim can only allocate device-A from t3k-node-a's ResourceSlice.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -66,9 +53,11 @@ metadata:
   namespace: default
   labels:
     app: t3k-scheduler-test
-    scheduling.x-k8s.io/pod-group: t3k-scheduler-test-gang
+    tenstorrent.com/gang-group: t3k-scheduler-test
+    tenstorrent.com/gang-size: "2"
 spec:
-  schedulerName: scheduler-plugins-scheduler
+  schedulingGates:
+  - name: tenstorrent.com/gang-ready
   restartPolicy: Never
   nodeSelector:
     tenstorrent.com/host-rank: "0"
@@ -89,8 +78,8 @@ spec:
       claims:
       - name: t3k
 ---
-# Pod pinned to host-rank=1 (t3k-node-b). Its DRA claim can only allocate
-# device-B from t3k-node-b's ResourceSlice — never competes with pod-0.
+# pod-1 is pinned to the host-rank=1 node (t3k-node-b).
+# Its DRA claim can only allocate device-B from t3k-node-b's ResourceSlice.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -98,9 +87,11 @@ metadata:
   namespace: default
   labels:
     app: t3k-scheduler-test
-    scheduling.x-k8s.io/pod-group: t3k-scheduler-test-gang
+    tenstorrent.com/gang-group: t3k-scheduler-test
+    tenstorrent.com/gang-size: "2"
 spec:
-  schedulerName: scheduler-plugins-scheduler
+  schedulingGates:
+  - name: tenstorrent.com/gang-ready
   restartPolicy: Never
   nodeSelector:
     tenstorrent.com/host-rank: "1"
