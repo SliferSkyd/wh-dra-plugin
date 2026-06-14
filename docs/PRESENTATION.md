@@ -486,6 +486,217 @@ kubectl get resourceclaims          # should be empty now
 
 ---
 
+### 1.12 Helm — the Kubernetes package manager
+
+#### The problem with raw YAML
+
+Deploying an application to Kubernetes means writing many YAML files: a Deployment, a Service,
+a ConfigMap, a ServiceAccount, RBAC roles, a DaemonSet, possibly a CRD. For the DRA plugin alone
+there are 8+ YAML files. Challenges immediately appear:
+
+- How do you deploy the same application to a dev cluster vs production, with different image tags
+  or replica counts?
+- How do you upgrade cleanly — apply only the changed files without touching the rest?
+- How do you roll back if the new version breaks something?
+- How do you share the plugin with another team so they can deploy it in their own cluster?
+
+Helm solves all of these by treating a set of Kubernetes YAML files as one **package** (a *chart*),
+with variables that can be customised per deployment.
+
+#### Key concepts
+
+**Chart** — a directory of YAML templates + a `values.yaml` file. Think of it as an npm package
+or a Docker image, but for Kubernetes objects.
+
+```
+wh-dra-plugin/          ← chart root
+  Chart.yaml            ← name, version, description
+  values.yaml           ← default variables (image tag, replica count, …)
+  templates/
+    daemonset.yaml      ← YAML with {{ .Values.image.tag }} placeholders
+    serviceaccount.yaml
+    clusterrole.yaml
+    configmap.yaml
+    …
+```
+
+**Values** — variables that change between deployments. In `values.yaml`:
+```yaml
+image:
+  repository: harbor.moreh.io/wh-dra-kubelet-plugin
+  tag: v0.1.0
+
+plugin:
+  fmAddr: ""            # empty = FM disabled
+  healthInterval: 30s
+```
+
+A user can override any value without editing the templates:
+```bash
+helm install wh-dra ./chart --set image.tag=v0.2.0 --set plugin.fmAddr=ttfm-agent:50051
+```
+
+**Release** — one installed instance of a chart in a cluster. The same chart can be installed
+multiple times under different release names (e.g. dev vs staging).
+
+**Registry** — Helm charts can be pushed to an OCI registry (Harbor, GHCR) just like Docker
+images. A team deploys by pulling the chart rather than cloning the repo.
+
+#### Key Helm commands
+
+```bash
+# Install the chart for the first time
+helm install wh-dra ./deploy/chart -n kube-system
+
+# Upgrade to a new version (applies only what changed)
+helm upgrade wh-dra ./deploy/chart -n kube-system --set image.tag=v0.2.0
+
+# Roll back to the previous release
+helm rollback wh-dra 1 -n kube-system
+
+# See all deployed releases
+helm list -A
+
+# See what Kubernetes objects a release owns
+helm get manifest wh-dra -n kube-system
+
+# Uninstall (deletes all objects the chart created)
+helm uninstall wh-dra -n kube-system
+
+# Render templates locally without applying (useful for debugging)
+helm template wh-dra ./deploy/chart --set image.tag=v0.2.0
+```
+
+#### Why Helm matters for our plugin
+
+Without Helm, deploying the DRA plugin to a new cluster means:
+1. Clone the repo
+2. Manually edit image tags in 3 YAML files
+3. Apply 8 files in the right order
+4. Hope you didn't miss one
+
+With Helm:
+```bash
+helm install wh-dra oci://harbor.moreh.io/charts/wh-dra-plugin --version 0.2.0 \
+  --set plugin.fmAddr=ttfm-agent:50051
+```
+One command. Versioned. Reproducible. Rollback in 10 seconds if something breaks.
+
+---
+
+### 1.13 GitHub CI/CD — automating build and deploy
+
+#### What is CI/CD?
+
+**CI (Continuous Integration)** — every time code is pushed, automatically:
+- Build the binary / Docker image
+- Run tests
+- Report pass or fail on the pull request
+
+**CD (Continuous Deployment)** — when code is merged, automatically:
+- Build and push the production image
+- Deploy to the cluster (via Helm upgrade)
+- Verify the rollout succeeded
+
+The goal: a developer pushes code and the change is running on the cluster within minutes, with
+no manual steps.
+
+#### GitHub Actions basics
+
+GitHub Actions is GitHub's built-in CI/CD system. A **workflow** is a YAML file in
+`.github/workflows/` that describes jobs and steps triggered by events (push, pull_request,
+release).
+
+```yaml
+# .github/workflows/build.yaml
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main]       # trigger: every push to main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build Docker image
+      run: docker build -t wh-dra-kubelet-plugin:${{ github.sha }} .
+
+    - name: Push to registry
+      run: |
+        docker tag wh-dra-kubelet-plugin:${{ github.sha }} harbor.moreh.io/wh-dra-kubelet-plugin:${{ github.sha }}
+        docker push harbor.moreh.io/wh-dra-kubelet-plugin:${{ github.sha }}
+
+    - name: Deploy to cluster
+      run: |
+        helm upgrade wh-dra ./deploy/chart \
+          --set image.tag=${{ github.sha }} \
+          --namespace kube-system \
+          --wait    # block until all DaemonSet pods are Running
+```
+
+#### Our specific CI/CD pipeline
+
+```
+Developer pushes to PR
+        │
+        ▼
+GitHub Actions: CI job
+  ├── go build ./...         # compile plugin binary
+  ├── go test ./...          # run unit tests
+  └── docker build           # build image (not pushed — just validates)
+        │
+        │  (PR approved + merged to main)
+        ▼
+GitHub Actions: CD job
+  ├── docker build
+  ├── docker push → harbor.moreh.io/wh-dra-kubelet-plugin:<git-sha>
+  ├── helm upgrade wh-dra    # updates DaemonSet image tag
+  └── kubectl rollout status daemonset/wh-dra-kubelet-plugin
+              │
+              ▼
+        DaemonSet rolling update:
+          t3k-node-a: old pod terminated → new pod started → Ready
+          t3k-node-b: old pod terminated → new pod started → Ready
+              │
+              ▼
+        New ResourceSlice published by new plugin version
+        Scheduler immediately sees updated devices
+```
+
+#### Rolling update — zero downtime for running workloads
+
+When Helm upgrades the DaemonSet, Kubernetes does a **rolling update** — it replaces pods one
+node at a time:
+
+1. New pod starts on `t3k-node-a` alongside the old one
+2. New pod becomes Ready (plugin registered, ResourceSlice published)
+3. Old pod is terminated
+4. Repeat for `t3k-node-b`
+
+Running workloads are not affected because the plugin pod is separate from workload pods. The
+only brief gap is between old pod termination and new pod Ready — during which the scheduler
+uses the last-known ResourceSlice (stale by seconds, safe in practice).
+
+#### Environment-specific deployment
+
+The same chart ships to multiple environments, each with different values:
+
+```
+main branch push → dev cluster
+  helm upgrade wh-dra ./chart --set image.tag=<sha> --set plugin.healthInterval=10s
+
+release tag v0.2.0 → production cluster
+  helm upgrade wh-dra oci://harbor.moreh.io/charts/wh-dra-plugin --version 0.2.0 \
+    --set image.tag=v0.2.0 --set plugin.healthInterval=60s
+```
+
+One chart, two clusters, two environments — no code duplication, no manual file editing.
+
+---
+
 ## Part 2 — The Problem
 
 Before this plugin, running AI workloads on T3K inside Kubernetes required:
