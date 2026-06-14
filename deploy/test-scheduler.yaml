@@ -19,7 +19,7 @@
 #   kubectl delete -f deploy/test-scheduler.yaml
 ---
 # PodGroup declares the gang: scheduler holds all 2 pods until both can place.
-apiVersion: scheduling.sigs.k8s.io/v1alpha1
+apiVersion: scheduling.x-k8s.io/v1alpha1
 kind: PodGroup
 metadata:
   name: t3k-scheduler-test-gang
@@ -59,7 +59,7 @@ spec:
       labels:
         job-name: t3k-scheduler-test
         # Ties this pod to the PodGroup above.
-        scheduling.sigs.k8s.io/pod-group: t3k-scheduler-test-gang
+        scheduling.x-k8s.io/pod-group: t3k-scheduler-test-gang
     spec:
       # Route through the coscheduling-aware scheduler, not the default one.
       schedulerName: scheduler-plugins-scheduler
