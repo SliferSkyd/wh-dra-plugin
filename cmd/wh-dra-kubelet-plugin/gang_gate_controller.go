@@ -155,7 +155,7 @@ func removeGangGate(ctx context.Context, client kubernetes.Interface, pod *corev
 		return fmt.Errorf("marshal patch: %w", err)
 	}
 	_, err = client.CoreV1().Pods(pod.Namespace).Patch(
-		ctx, pod.Name, types.StrategicMergePatchType, data, metav1.PatchOptions{},
+		ctx, pod.Name, types.MergePatchType, data, metav1.PatchOptions{},
 	)
 	return err
 }
