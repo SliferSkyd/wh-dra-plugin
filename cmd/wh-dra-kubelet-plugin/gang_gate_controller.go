@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -112,12 +113,18 @@ func reconcileGangGates(ctx context.Context, client kubernetes.Interface) error 
 		}
 		klog.Infof("gang %s/%s: all %d pods present, removing scheduling gate from %d pod(s)",
 			key.namespace, key.group, info.wantSize, len(info.gated))
+		var wg sync.WaitGroup
 		for _, pod := range info.gated {
-			if err := removeGangGate(ctx, client, pod); err != nil {
-				klog.Errorf("remove gate %s from pod %s/%s: %v",
-					gangGateName, pod.Namespace, pod.Name, err)
-			}
+			wg.Add(1)
+			go func(p *corev1.Pod) {
+				defer wg.Done()
+				if err := removeGangGate(ctx, client, p); err != nil {
+					klog.Errorf("remove gate %s from pod %s/%s: %v",
+						gangGateName, p.Namespace, p.Name, err)
+				}
+			}(pod)
 		}
+		wg.Wait()
 	}
 	return nil
 }
