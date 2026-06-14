@@ -1,32 +1,29 @@
-# Gang-scheduled co-scheduling test: 2 pods, one per node, sharing pool "t3k-pod-0".
+# Gang-scheduled test: 2 pods, one per node, sharing pool "t3k-pod-0".
 #
 # What this verifies:
-#   1. GANG: both pods schedule atomically — neither runs until both can be placed
-#   2. podAntiAffinity forces them onto different nodes
-#   3. CEL selector on physical_pod pins them to the chip-to-chip pair only
-#   4. Each pod gets its node's TT_HOST_RANK (0 or 1) from CDI injection
-#   5. resourceSliceCount:2 blocks allocation when a node plugin is down
+#   1. Both pods schedule with one per node (DRA exclusivity + anti-affinity)
+#   2. CEL selector on physical_pod pins them to the connected pair only
+#   3. Each pod gets its node's TT_HOST_RANK (0 or 1) from CDI injection
+#   4. resourceSliceCount:2 blocks allocation when a node plugin is down
+#   5. Gang gate ensures both pods schedule simultaneously (not one before the other)
 #
-# Prerequisites:
-#   scheduler-plugins must be installed (see docs/GANG-SCHEDULING.md)
+# Gang scheduling via Scheduling Gates:
+#   Each pod carries schedulingGates: [{name: "tenstorrent.com/gang-ready"}].
+#   The gang gate controller (running inside the DaemonSet plugin on every node)
+#   watches pods with the tenstorrent.com/gang-group label.  When the number of
+#   active pods in a group reaches tenstorrent.com/gang-size the controller
+#   removes the gate from all pods at once.  The default scheduler then sees all
+#   pods in the same scheduling cycle and DRA's sequential PreBind ensures they
+#   land on different nodes.
 #
-# Expected result: EITHER both pods on t3k-node-a/b simultaneously, OR both Pending.
+# Expected result: one pod on t3k-node-a (TT_HOST_RANK=0),
+#                  one pod on t3k-node-b (TT_HOST_RANK=1)
 #
 # Run:
 #   kubectl apply -f deploy/test-scheduler.yaml
 #   kubectl get pods -l job-name=t3k-scheduler-test -o wide -w
 #   kubectl logs -l job-name=t3k-scheduler-test --prefix
 #   kubectl delete -f deploy/test-scheduler.yaml
----
-# PodGroup declares the gang: scheduler holds all 2 pods until both can place.
-apiVersion: scheduling.x-k8s.io/v1alpha1
-kind: PodGroup
-metadata:
-  name: t3k-scheduler-test-gang
-  namespace: default
-spec:
-  minMember: 2
-  scheduleTimeoutSeconds: 60
 ---
 apiVersion: resource.k8s.io/v1
 kind: ResourceClaimTemplate
@@ -58,15 +55,22 @@ spec:
     metadata:
       labels:
         job-name: t3k-scheduler-test
-        # Ties this pod to the PodGroup above.
-        scheduling.x-k8s.io/pod-group: t3k-scheduler-test-gang
+        tenstorrent.com/gang-group: t3k-scheduler-test
+        tenstorrent.com/gang-size: "2"
     spec:
-      # Route through the coscheduling-aware scheduler, not the default one.
-      schedulerName: scheduler-plugins-scheduler
+      schedulingGates:
+      - name: tenstorrent.com/gang-ready
       restartPolicy: Never
       resourceClaims:
       - name: t3k
         resourceClaimTemplateName: t3k-scheduler-test-claim
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchLabels:
+                job-name: t3k-scheduler-test
       containers:
       - name: test
         image: ubuntu:22.04
@@ -75,7 +79,7 @@ spec:
         - |
           echo "=== pod index=$JOB_COMPLETION_INDEX node=$(cat /etc/hostname) ==="
           env | grep -E "^TT_|^WH_" | sort
-          echo "=== gang scheduled — both pods placed atomically ==="
+          echo "=== OK — sleeping so both pods are visible simultaneously ==="
           sleep 30
         resources:
           claims:

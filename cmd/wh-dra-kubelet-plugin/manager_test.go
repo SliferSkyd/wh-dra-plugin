@@ -182,4 +182,39 @@ func TestPoolName_BothNodesAgree(t *testing.T) {
 	}
 }
 
+func TestPoolTotalSliceCount(t *testing.T) {
+	tests := []struct {
+		desc    string
+		podSize int
+		want    int64
+	}{
+		{"single-node returns 0 (no override)", 1, 0},
+		{"2-node pool returns 2", 2, 2},
+		{"8-node Galaxy pool returns 8", 8, 8},
+	}
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			m := &WHManager{podSize: tt.podSize}
+			if got := m.PoolTotalSliceCount(); got != tt.want {
+				t.Errorf("PoolTotalSliceCount() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNoPartialAllocation verifies the invariant that drives the TotalSliceCount
+// field: when podSize > 1, PoolTotalSliceCount must equal podSize so the
+// scheduler blocks new allocations until all node plugins are healthy and have
+// contributed a slice.  A zero return would let the scheduler allocate from an
+// incomplete pool (e.g. only one node up) and allow a workload to start with
+// half the hardware it expects.
+func TestNoPartialAllocation(t *testing.T) {
+	for _, podSize := range []int{2, 4, 8} {
+		m := &WHManager{podSize: podSize}
+		if got := m.PoolTotalSliceCount(); got != int64(podSize) {
+			t.Errorf("podSize=%d: PoolTotalSliceCount()=%d, want %d — partial allocation would be possible",
+				podSize, got, podSize)
+		}
+	}
+}
 

@@ -75,6 +75,7 @@ func main() {
 	}
 	defer d.Stop()
 
+	startGangGateController(ctx, k8s)
 	d.startHealthMonitoring(ctx, cfg.ttSmiPath, cfg.healthInterval)
 
 	// Prometheus metrics endpoint.
